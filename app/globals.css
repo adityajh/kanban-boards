@@ -9,31 +9,31 @@
   --ink-40:rgba(26,26,26,.40);
   --line:rgba(26,26,26,.12);
   --line-2:rgba(26,26,26,.20);
-  --saffron:#D67D2E;      /* single accent, <5% surface */
+  --accent:#D67D2E;      /* per-board accent, set from tenant config */
   --shadow:0 1px 2px rgba(26,26,26,.06);
 }
 *{box-sizing:border-box}
 body{margin:0;font-family:'Manrope',Inter,"Helvetica Neue",Helvetica,Arial,sans-serif;
   background:var(--ivory);color:var(--ink);font-weight:400;-webkit-font-smoothing:antialiased}
 button{font-family:inherit;cursor:pointer}
-::selection{background:rgba(214,125,46,.18)}
+::selection{background:color-mix(in srgb,var(--accent) 18%,transparent)}
 
 /* ---- top bar ---- */
 .topbar{display:flex;align-items:center;gap:18px;padding:16px 26px;background:var(--bone);border-bottom:1px solid var(--line)}
-.brand{font-weight:500;letter-spacing:.34em;font-size:15px;line-height:1}
+.brand{text-transform:uppercase;font-weight:500;letter-spacing:.34em;font-size:15px;line-height:1}
 .brand small{display:block;font-weight:400;letter-spacing:.16em;color:var(--ink-60);font-size:9px;margin-top:5px;text-transform:uppercase}
 .dots{display:flex;gap:6px;align-items:center}
-.dots i{width:6px;height:6px;border-radius:50%;background:var(--saffron);display:block}
+.dots i{width:6px;height:6px;border-radius:50%;background:var(--accent);display:block}
 .spacer{flex:1}
 .whoami{font-size:12px;color:var(--ink-60);letter-spacing:.02em}
 .whoami b{color:var(--ink);font-weight:500}
 .linkbtn{background:none;border:none;color:var(--ink-60);font-size:11px;text-transform:uppercase;letter-spacing:.1em}
-.linkbtn:hover{color:var(--saffron)}
+.linkbtn:hover{color:var(--accent)}
 
 /* ---- board ---- */
 .board{display:flex;gap:16px;padding:22px 26px;align-items:flex-start;overflow-x:auto;min-height:calc(100vh - 66px)}
 .col{background:var(--bone);border:1px solid var(--line);border-radius:10px;width:300px;flex:0 0 300px;display:flex;flex-direction:column;max-height:calc(100vh - 108px)}
-.col.drag{border-color:var(--saffron);box-shadow:0 0 0 1px var(--saffron)}
+.col.drag{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .col h2{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-60);font-weight:500;margin:0;padding:15px 15px 9px;display:flex;justify-content:space-between;align-items:center}
 .col h2 span{background:transparent;border:1px solid var(--line-2);border-radius:20px;padding:0 8px;color:var(--ink-60);font-size:10px;min-width:20px;text-align:center}
 .cards{padding:7px 11px 12px;overflow-y:auto;flex:1}
@@ -44,19 +44,18 @@ button{font-family:inherit;cursor:pointer}
 .card .title{font-size:14px;font-weight:500;line-height:1.32}
 .card .meta{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:9px}
 .tag{font-size:9px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);border:1px solid var(--line-2);border-radius:3px;padding:2px 6px}
-.tag.A,.tag.B,.tag.Onboarding{color:var(--ink);border-color:var(--line-2)}
 .assignee{font-size:11px;color:var(--ink-60);letter-spacing:.01em}
 .pill{font-size:10px;color:var(--ink-60);border:1px solid var(--line);border-radius:20px;padding:1px 7px}
 .bar{height:3px;background:var(--line);border-radius:3px;margin-top:11px;overflow:hidden}
-.bar > i{display:block;height:100%;background:var(--saffron)}
+.bar > i{display:block;height:100%;background:var(--accent)}
 .addcard{width:100%;background:none;border:1px dashed var(--line-2);border-radius:7px;color:var(--ink-40);padding:9px;font-size:12px;letter-spacing:.02em;margin-top:2px}
-.addcard:hover{border-color:var(--saffron);color:var(--saffron)}
+.addcard:hover{border-color:var(--accent);color:var(--accent)}
 
 /* ---- modal ---- */
 .overlay{position:fixed;inset:0;background:rgba(26,26,26,.42);display:flex;justify-content:center;align-items:flex-start;padding:42px 16px;z-index:50;overflow-y:auto}
 .modal{background:var(--ivory);border-radius:12px;width:580px;max-width:100%;padding:26px 28px;box-shadow:0 16px 50px rgba(26,26,26,.28)}
 .modal input.titleinput{font-size:21px;font-weight:500;letter-spacing:-.01em;border:none;background:none;width:100%;color:var(--ink);padding:0}
-.modal input:focus,.modal textarea:focus,.modal select:focus{outline:2px solid var(--saffron);outline-offset:1px;border-radius:6px}
+.modal input:focus,.modal textarea:focus,.modal select:focus{outline:2px solid var(--accent);outline-offset:1px;border-radius:6px}
 .row{display:flex;gap:10px;align-items:center;margin:14px 0}
 .row select,.row input{font-size:12px;padding:6px 9px;border:1px solid var(--line-2);border-radius:6px;background:var(--card);color:var(--ink);letter-spacing:.02em}
 textarea.desc{width:100%;min-height:56px;border:1px solid var(--line-2);border-radius:8px;padding:9px;font-size:13px;line-height:1.5;background:var(--card);color:var(--ink);resize:vertical;font-family:inherit}
@@ -65,21 +64,21 @@ textarea.desc{width:100%;min-height:56px;border:1px solid var(--line-2);border-r
 .st{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;background:var(--card);border:1px solid var(--line);margin-bottom:6px;cursor:grab}
 .st.done .sttext{text-decoration:line-through;color:var(--ink-40)}
 .st .grip{color:var(--line-2);font-size:13px}
-.st input[type=checkbox]{accent-color:var(--saffron);width:15px;height:15px}
+.st input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
 .sttext{flex:1;font-size:13px;border:none;background:none;color:var(--ink);font-family:inherit}
 .x{background:none;border:none;color:var(--ink-40);font-size:16px;line-height:1;padding:0 4px}
-.x:hover{color:var(--saffron)}
+.x:hover{color:var(--accent)}
 .linkitem{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:5px}
-.linkitem a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--saffron);padding-bottom:1px}
-.linkitem a:hover{color:var(--saffron)}
+.linkitem a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--accent);padding-bottom:1px}
+.linkitem a:hover{color:var(--accent)}
 .note{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin-bottom:7px}
-.note .who{font-size:11px;color:var(--saffron);font-weight:600;letter-spacing:.04em}
+.note .who{font-size:11px;color:var(--accent);font-weight:600;letter-spacing:.04em}
 .note .when{font-size:10px;color:var(--ink-40);float:right}
 .note .body{font-size:13px;line-height:1.5;margin-top:4px;white-space:pre-wrap}
 .addinline{display:flex;gap:7px;margin-top:7px}
 .addinline input{flex:1;font-size:13px;padding:7px 9px;border:1px solid var(--line-2);border-radius:7px;background:var(--card);color:var(--ink);font-family:inherit}
 
-/* ---- buttons: charcoal primary (saffron is never a button) ---- */
+/* ---- buttons: charcoal primary (accent is never a button) ---- */
 .btn{background:var(--ink);color:var(--ivory);border:none;border-radius:7px;padding:7px 14px;font-size:12px;font-weight:500;letter-spacing:.03em}
 .btn:hover{background:#000}
 .btn.ghost{background:none;color:var(--ink-60);border:1px solid var(--line-2)}
@@ -90,17 +89,17 @@ textarea.desc{width:100%;min-height:56px;border:1px solid var(--line-2);border-r
 
 /* ---- gates ---- */
 .gate{max-width:380px;margin:15vh auto;background:var(--bone);border:1px solid var(--line);border-radius:12px;padding:34px 30px;text-align:center;box-shadow:var(--shadow);position:relative;overflow:hidden}
-.gate:before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:var(--saffron)}
-.gate h1{font-size:15px;letter-spacing:.32em;font-weight:500;margin:0 0 6px}
+.gate:before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:var(--accent)}
+.gate h1{text-transform:uppercase;font-size:15px;letter-spacing:.32em;font-weight:500;margin:0 0 6px}
 .gate .sub{font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-60);margin:0 0 20px}
 .gate p{color:var(--ink-60);font-size:13px;line-height:1.5;margin:4px 0 20px}
 .gate input{width:100%;padding:11px;border:1px solid var(--line-2);border-radius:8px;font-size:14px;margin-bottom:13px;background:var(--card);color:var(--ink);font-family:inherit}
-.gate input:focus{outline:2px solid var(--saffron);outline-offset:1px}
+.gate input:focus{outline:2px solid var(--accent);outline-offset:1px}
 .gate .names{display:flex;gap:9px;justify-content:center;flex-wrap:wrap}
 .gate .names button{flex:1;min-width:92px;padding:12px;border:1px solid var(--line-2);border-radius:8px;background:var(--card);font-size:14px;color:var(--ink);letter-spacing:.02em;font-family:inherit}
-.gate .names button:hover{border-color:var(--saffron);color:var(--saffron)}
+.gate .names button:hover{border-color:var(--accent);color:var(--accent)}
 .gatedots{display:flex;gap:6px;justify-content:center;margin-bottom:16px}
-.gatedots i{width:6px;height:6px;border-radius:50%;background:var(--saffron);display:block}
+.gatedots i{width:6px;height:6px;border-radius:50%;background:var(--accent);display:block}
 .err{color:#9B3B2E;font-size:12px;margin-bottom:9px;letter-spacing:.01em}
 
 /* ---- library ---- */
@@ -114,12 +113,38 @@ textarea.desc{width:100%;min-height:56px;border:1px solid var(--line-2);border-r
 .shelf h4{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-60);font-weight:600;margin:0 0 12px}
 .shelf .empty{font-size:12px;color:var(--ink-40);padding:4px 0 8px}
 .res{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
-.res a{flex:1;font-size:13px;color:var(--ink);text-decoration:none;border-bottom:1px solid var(--saffron);padding-bottom:1px;width:fit-content}
-.res a:hover{color:var(--saffron)}
+.res a{flex:1;font-size:13px;color:var(--ink);text-decoration:none;border-bottom:1px solid var(--accent);padding-bottom:1px;width:fit-content}
+.res a:hover{color:var(--accent)}
 .proj-links{margin-bottom:14px}
 .proj-name{font-size:12px;font-weight:500;margin-bottom:5px;cursor:pointer;display:flex;align-items:center;gap:7px}
-.proj-name:hover{color:var(--saffron)}
+.proj-name:hover{color:var(--accent)}
 .res-link{display:block;font-size:13px;color:var(--ink-60);text-decoration:none;padding:2px 0 2px 12px;border-left:2px solid var(--line)}
-.res-link:hover{color:var(--saffron);border-left-color:var(--saffron)}
+.res-link:hover{color:var(--accent);border-left-color:var(--accent)}
 .shelf .addinline{margin-top:12px}
 .shelf .addinline input{font-size:12px}
+
+/* ---- admin overview ---- */
+.admin{max-width:1000px;margin:0 auto;padding:24px 26px 60px}
+.admin section{margin-bottom:32px}
+.admin h3{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-60);font-weight:600;margin:0 0 12px;display:flex;gap:8px;align-items:center}
+.admin h3 span{border:1px solid var(--line-2);border-radius:20px;padding:0 8px;font-size:10px}
+.admin .hint{font-size:12px;color:var(--ink-60);margin:-4px 0 12px}
+.ascroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--bone)}
+.atable{width:100%;border-collapse:collapse;font-size:13px}
+.atable th{text-align:left;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-60);font-weight:600;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+.atable td{padding:10px 12px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;white-space:nowrap}
+.atable tr:last-child td{border-bottom:none}
+.atable a,.alist a{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--accent)}
+.atable .hot{color:var(--accent);font-weight:600}
+.slug{color:var(--ink-40);font-size:11px;margin-left:6px}
+.alist{list-style:none;margin:0;padding:0}
+.alist li{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
+.alist li span{font-size:11px;color:var(--ink-60)}
+.alist .body{flex-basis:100%;color:var(--ink-60);font-size:12px;white-space:pre-wrap}
+.aform{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;align-items:end}
+.aform label{display:flex;flex-direction:column;gap:4px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-60)}
+.aform input{font-size:13px;padding:7px 9px;border:1px solid var(--line-2);border-radius:7px;background:var(--card);color:var(--ink);font-family:inherit;letter-spacing:0;text-transform:none}
+.aform input[type=color]{padding:2px;height:34px}
+.created{margin-top:14px;padding:12px 14px;border:1px solid var(--accent);border-radius:8px;background:var(--card);font-size:13px;line-height:1.7}
+.created code{font-size:13px;background:var(--bone);padding:2px 6px;border-radius:4px;user-select:all}
+.empty{font-size:12px;color:var(--ink-40)}

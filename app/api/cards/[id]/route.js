@@ -1,22 +1,23 @@
 import { sql } from '../../../../lib/db';
-import { json, options, authed } from '../../../../lib/http';
+import { json, options, idParam } from '../../../../lib/http';
+import { withTenant, clean } from '../../../../lib/tenant';
 export const dynamic = 'force-dynamic';
 export async function OPTIONS() { return options(); }
 
-export async function GET(req, { params }) {
-  if (!authed(req)) return json({ error: 'unauthorized' }, 401);
-  const id = Number(params.id);
-  const [card] = await sql`select * from cards where id=${id}`;
+export const GET = withTenant(async (req, { params }, t) => {
+  const id = idParam(params);
+  const [card] = id ? await sql`select * from cards where id=${id} and tenant_id=${t.id}` : [];
   if (!card) return json({ error: 'not found' }, 404);
-  card.subtasks = await sql`select * from subtasks where card_id=${id} order by position, id`;
-  card.links = await sql`select * from links where card_id=${id} order by id`;
-  card.notes = await sql`select * from notes where card_id=${id} order by created_at, id`;
-  return json(card);
-}
+  const out = clean(card);
+  out.subtasks = await sql`select * from subtasks where card_id=${id} order by position, id`;
+  out.links = await sql`select * from links where card_id=${id} order by id`;
+  out.notes = await sql`select * from notes where card_id=${id} order by created_at, id`;
+  return json(out);
+});
 
-export async function PATCH(req, { params }) {
-  if (!authed(req)) return json({ error: 'unauthorized' }, 401);
-  const id = Number(params.id);
+export const PATCH = withTenant(async (req, { params }, t) => {
+  const id = idParam(params);
+  if (!id) return json({ error: 'not found' }, 404);
   const b = await req.json();
   const [card] = await sql`update cards set
     title = coalesce(${b.title ?? null}, title),
@@ -26,13 +27,14 @@ export async function PATCH(req, { params }) {
     tag = coalesce(${b.tag ?? null}, tag),
     position = coalesce(${b.position ?? null}, position),
     updated_at = now()
-    where id=${id} returning *`;
+    where id=${id} and tenant_id=${t.id} returning *`;
   if (!card) return json({ error: 'not found' }, 404);
-  return json(card);
-}
+  return json(clean(card));
+});
 
-export async function DELETE(req, { params }) {
-  if (!authed(req)) return json({ error: 'unauthorized' }, 401);
-  await sql`delete from cards where id=${Number(params.id)}`;
+export const DELETE = withTenant(async (req, { params }, t) => {
+  const id = idParam(params);
+  const [gone] = id ? await sql`delete from cards where id=${id} and tenant_id=${t.id} returning id` : [];
+  if (!gone) return json({ error: 'not found' }, 404);
   return json({ ok: true });
-}
+});
