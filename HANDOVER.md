@@ -211,17 +211,32 @@ the new ones cover session/board scoping, member-vs-admin permissions, the agent
 staying open while being refused on settings, password change evicting other sessions, and
 the last-admin guard.
 
-The isolation suite was **not** run by the agent that wrote it: that session had no network
-route to Neon or to the deployed app (egress policy), so nothing could be exercised
-end-to-end. **Nobody has yet signed in to a board with a password.** Run the suite against
-production and confirm a real sign-in before treating this as finished.
+**95/95 against production, 2026-09-16.** The agent that wrote the suite could not run it —
+that session had no network route to Neon or to the deployed app (egress policy) — so Adi
+ran it. Two bugs came out of that, both now fixed:
+
+- Creating a board returned 400 instead of 409 on a duplicate slug, because the new
+  admin-username check ran ahead of the insert and rejected a username derived from a
+  short name. A board whose first person had a short or unusual name could not be created
+  at all.
+- Three of the new password checks built their JSON inline inside `"$( … )"`, which bash
+  3.2 mangles — the trap documented below, walked into anyway. curl sent an empty body, and
+  since a missing `newPassword` reads as "too short", the two negative checks passed for
+  the wrong reason. Bodies now go in variables, and a check parses the body before sending
+  it so this fails loudly rather than silently.
+
+The second is the one to remember: a green negative assertion is worth nothing if the
+request never arrived. Only the positive check next to it exposed the problem.
 
 ## Still open
 
-- **The deploy has not been verified.** See the note above the fold: run
-  `tests/isolation-test.sh` against production, and sign in to one board by hand.
+- **Nobody has signed in through a browser yet.** The API is proven by the suite, but as of
+  the last check every account still has `last_login_at = null`, so the login screen, the
+  forced first-password change and the settings screens have not been exercised by a human.
+  That is the last untested surface.
 - Everyone is still on the password they were issued, so every account shows
-  `must_change`. They each replace it at first sign-in.
+  `must_change`. They each replace it at first sign-in, after which the copies in
+  `kanban-boards.env` are stale and should be deleted.
 - The Inditress passphrase still has not been rotated. Now that humans no longer type it,
   rotating it only affects agents — the easiest it will ever be.
 - The hub registry entry on the VPS is still titled "Inditress Board".
