@@ -86,7 +86,12 @@ login() { # slug user pass jar -> http code
   curl -s -o /dev/null -w '%{http_code}' -c "$4" -X POST -H "$CT" \
     -d "{\"slug\":\"$1\",\"username\":\"$2\",\"password\":\"$3\"}" $B/api/auth/login; }
 
-# A throwaway member and admin on jbj, created with ADMIN_KEY the way the settings UI does.
+# Adding a user also adds their display name to the board's people list, so remember what
+# it was and put it back in cleanup — otherwise a second run sees a changed board.
+names_of() { curl -s -H "$JBJ" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"]["names"]))'; }
+JBJ_NAMES=$(names_of)
+
+# A throwaway member on jbj, created with ADMIN_KEY the way the settings UI does.
 JT="X-Tenant: jbj"
 MEMBER=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users \
   -d '{"username":"zz-test-member","displayName":"ZZ Test Member"}')
@@ -188,6 +193,8 @@ echo "== cleanup"
 curl -s -o /dev/null -X DELETE -H "$JBJ" $B/api/cards/$JN_CARD
 check "jbj removes the test member" 200 "$(code -X DELETE -H "$ADM" -H "$JT" $B/api/settings/users/$MEMBER_ID)"
 check "the removed member cannot sign in" 401 "$(login jbj zz-test-member brand-new-password $JAR2)"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/jbj -d "{\"config\":{\"names\":$JBJ_NAMES}}"
+check "jbj people list restored" "$JBJ_NAMES" "$(names_of)"
 rm -f $JAR $JAR2
 
 check "jbj deletes its test card" 200 "$(code -X DELETE -H "$JBJ" $B/api/cards/$J_CARD)"
