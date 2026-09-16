@@ -69,6 +69,11 @@ Local dev: put the three vars in `.env.local` (git-ignored) pointing at the `dev
 
 Push to `main` → Vercel production. Other branches/PRs → preview deployments on the `dev` DB branch.
 
+**Connecting the repo to Vercel does not deploy what is already on `main`** — it only wires up
+future pushes. After a fresh `vercel git connect`, either push a new commit or hit Redeploy in
+the dashboard, or the last manual `vercel deploy --prod` stays live and it looks like nothing
+happened. This cost a round of confused debugging on 2026-09-16.
+
 ## New client
 
 Open `/admin` → **New board** (name, slug, people, tags, accent). You get back two secrets,
