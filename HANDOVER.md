@@ -184,19 +184,24 @@ Decisions taken with Adi before building:
 - `must_change` is enforced by the UI, not the API: a user who has not changed their
   generated password can still call the API with it. It is a hygiene prompt, not a gate.
 
-## Deploying this — order matters
+## Deployed — 2026-09-16
 
-**Migration 003 must be applied to `production` before this code reaches `main`.** The board
-UI requires a login, so if the app ships against a database with no `users` table, every
-board is unreachable until the migration lands. Sequence:
+Done in this order, which is the order that matters: the board UI requires a login, so the
+`users` table has to exist before the code ships or every board is unreachable.
 
-1. Apply `migrations/003_users_sessions.sql` to the `production` Neon branch.
-2. Seed users: `scripts/seed-users.sh <url> inditress Adi Aadhya Deepak` and
-   `scripts/seed-users.sh <url> jbj Adi Rahul` (needs `ADMIN_KEY`). Passwords print once —
-   put them in `kanban-boards.env`.
-3. Merge to `main`.
+1. Migration 003 applied to `production` (and to `dev`, for previews).
+2. Nine users seeded across all three boards, each with a generated password and
+   `must_change = true`. Adi is admin on all three.
+3. Merged to `main`, which auto-deploys to production.
 
-Applied to the `dev` branch already, so preview deployments work.
+The seeding was done by inserting hashes computed with the shipped `lib/password.mjs`
+rather than by `scripts/seed-users.sh`, because the agent had neither `ADMIN_KEY` nor a
+network route to the deployed app. The script is still the right tool for a new board.
+
+**There were three boards, not two.** `zealxle` (ZEAL x LE — Adi, Ankita, Sharjeel,
+DrSajid) was created on 2026-09-16, after the original handover was written. It would have
+been locked out had it been missed. If you add a board through SQL rather than the admin
+API, remember it needs an admin user or nobody can sign in to it.
 
 ## Tests
 
@@ -206,12 +211,17 @@ the new ones cover session/board scoping, member-vs-admin permissions, the agent
 staying open while being refused on settings, password change evicting other sessions, and
 the last-admin guard.
 
-The isolation suite was **not** run by the agent that wrote it: this session had no network
-route to Neon (egress policy blocks the Neon HTTP host), so the app could not talk to a
-database here. Run it against the preview or production URL before trusting it.
+The isolation suite was **not** run by the agent that wrote it: that session had no network
+route to Neon or to the deployed app (egress policy), so nothing could be exercised
+end-to-end. **Nobody has yet signed in to a board with a password.** Run the suite against
+production and confirm a real sign-in before treating this as finished.
 
 ## Still open
 
+- **The deploy has not been verified.** See the note above the fold: run
+  `tests/isolation-test.sh` against production, and sign in to one board by hand.
+- Everyone is still on the password they were issued, so every account shows
+  `must_change`. They each replace it at first sign-in.
 - The Inditress passphrase still has not been rotated. Now that humans no longer type it,
   rotating it only affects agents — the easiest it will ever be.
 - The hub registry entry on the VPS is still titled "Inditress Board".
