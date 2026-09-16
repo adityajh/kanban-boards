@@ -22,14 +22,17 @@ export const POST = withAdmin(async (req) => {
 
   // Every board is created with one admin, so there is always somebody who can sign in and
   // add the rest. Defaults to the first person listed.
-  // A person's name is not a username ("Mary Jane" has a space), so derive one when the
-  // caller doesn't give it rather than rejecting the board.
+  // Only a username the caller actually asked for is worth rejecting the request over.
   const given = String(b.adminUsername || '').trim();
-  const firstPerson = config.names[0];
-  const adminUsername = given || firstPerson.toLowerCase().replace(/[^a-z0-9._-]+/g, '');
-  if (!validUsername(adminUsername)) {
+  if (given && !validUsername(given)) {
     return json({ error: 'adminUsername: 2-32 chars of a-z, 0-9, dot, underscore, hyphen' }, 400);
   }
+  // A person's name need not make a usable username — "Mary Jane" has a space, "Jo" and "A"
+  // are short. Fall back to the slug (already validated) rather than refusing the board,
+  // and never fail here for a name we derived ourselves.
+  const firstPerson = config.names[0];
+  const derived = firstPerson.toLowerCase().replace(/[^a-z0-9._-]+/g, '');
+  const adminUsername = given || (validUsername(derived) ? derived : slug.slice(0, 32));
   // Show the person's real name where the board lists people, not the derived username.
   const adminDisplay = config.names.find((n) => n.toLowerCase() === adminUsername.toLowerCase())
     || (given ? adminUsername : firstPerson);
