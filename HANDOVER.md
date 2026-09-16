@@ -26,20 +26,11 @@ without a second copy of the app.
 | Neon | `production` migrated; `dev` branch for previews; pre-migration backup branch kept |
 | Vercel env | `KEY_PEPPER`, `ADMIN_KEY` on Production + Preview; `DATABASE_URL` on Preview → dev branch |
 
-## One thing is unfinished
+## GitHub + auto-deploy — done (2026-09-16)
 
-**GitHub repo + auto-deploy.** The repo `adityajh/kanban-boards` was never created: the
-fine-grained PAT in `~/Documents/Claude/Credentials/github_pat_playful_scratchpad.rtf`
-authenticates as `adityajh` but returns *"Resource not accessible by personal access token"*
-on `POST /user/repos` — it can't create repos. Adi needs to create an empty private repo
-(no README/.gitignore), or grant that token admin rights. Then:
-
-```bash
-cd ~/Documents/COWORK/kanban-boards && git push -u origin main
-vercel git connect https://github.com/adityajh/kanban-boards --yes
-```
-
-Until then every deploy is manual from this folder.
+The repo now exists, `main` is pushed, and the Vercel GitHub App is connected, so pushes to
+`main` deploy to production and branches get previews. Manual `vercel deploy --prod` is no
+longer the only route.
 
 Migration 002 is **done** (2026-09-16, production and dev): the temporary `DEFAULT 1` on
 `cards.tenant_id` / `resources.tenant_id` is dropped, so an insert that forgets its tenant
@@ -142,3 +133,85 @@ migration was additive — no column or row was dropped. Note that since 002 ran
 `tenant_id`, which now fails against a NOT NULL column with no default. Reads would still
 work. To truly roll back, re-add `alter table cards alter column tenant_id set default 1`
 (and the same for `resources`) first.
+
+
+---
+
+# Update — 2026-09-16: per-user login and board settings
+
+Written by the agent that added authentication. Branch `claude/relaxed-franklin-ybgt9t`.
+
+## What changed
+
+"Who are you?" was an honour-system name picker; it is now a real login. Each board has its
+own `users`, and people sign in with a username and password. Boards also got a settings
+screen at `/<slug>/settings`.
+
+Decisions taken with Adi before building:
+
+- The board passphrase **survives, for agents only**. It is still a bearer token for
+  `/api/*`, so every existing agent integration is untouched. The board UI no longer
+  accepts it, and it is refused (`403`) on `/api/settings/*` and `/api/auth/password` —
+  a shared secret is not a person.
+- Login is by **username**, seeded from each board's existing `config.names`.
+- First passwords are **generated and shown once**, like a board passphrase. `must_change`
+  holds the person at a change-password screen until they replace it.
+- **Adi is admin on both boards.**
+
+## Things worth knowing
+
+- **Passwords are not peppered with `KEY_PEPPER`**, on purpose. The pepper already has no
+  recovery path if rotated; user passwords must not share that fate. Per-password salt
+  (scrypt, `scrypt$N$r$p$salt$hash`) is enough, and the cost parameters live in the stored
+  string so they can be raised later without a migration.
+- **Cookie auth is same-origin only.** CORS is a wildcard with no `Allow-Credentials`, and
+  the cookie is `HttpOnly; SameSite=Lax`. Lax is what stands in for CSRF tokens. If anyone
+  ever adds `Access-Control-Allow-Credentials`, that protection is gone — don't.
+- `withTenant()` now resolves three credentials — passphrase, `ADMIN_KEY` + `X-Tenant`, and
+  a session cookie — to the same tenant shape, and passes the caller as a fourth argument.
+  Keep new routes going through it (or `withUser` for anything that acts on a person)
+  rather than hand-rolling auth.
+- **`ADMIN_KEY` is the way back into a board nobody can sign in to.** It passes the
+  board-admin checks on `/api/settings/*`, so Adi can always add or reset a user. The last
+  admin on a board cannot be demoted or deleted, so the UI can't strand a board either.
+- **Note authorship is now taken from the session**, not the request body, for signed-in
+  people. Agents on a bearer token still pass `author` as before.
+- A bug worth remembering, caught by the unit tests: `Buffer.from(x, 'base64')` silently
+  drops invalid characters, so a corrupt `password_hash` decoded to an empty buffer — and
+  scrypt with keylen 0 returns an empty buffer that compares *equal*, accepting every
+  password. `verifyPassword` now rejects any undersized salt or hash. If you touch that
+  function, keep `tests/auth-test.mjs` green.
+- `must_change` is enforced by the UI, not the API: a user who has not changed their
+  generated password can still call the API with it. It is a hygiene prompt, not a gate.
+
+## Deploying this — order matters
+
+**Migration 003 must be applied to `production` before this code reaches `main`.** The board
+UI requires a login, so if the app ships against a database with no `users` table, every
+board is unreachable until the migration lands. Sequence:
+
+1. Apply `migrations/003_users_sessions.sql` to the `production` Neon branch.
+2. Seed users: `scripts/seed-users.sh <url> inditress Adi Aadhya Deepak` and
+   `scripts/seed-users.sh <url> jbj Adi Rahul` (needs `ADMIN_KEY`). Passwords print once —
+   put them in `kanban-boards.env`.
+3. Merge to `main`.
+
+Applied to the `dev` branch already, so preview deployments work.
+
+## Tests
+
+`tests/auth-test.mjs` — 44 checks on password hashing and cookie parsing. No database, no
+server: `node tests/auth-test.mjs`. `tests/isolation-test.sh` grew from 40 to 95 checks;
+the new ones cover session/board scoping, member-vs-admin permissions, the agent path
+staying open while being refused on settings, password change evicting other sessions, and
+the last-admin guard.
+
+The isolation suite was **not** run by the agent that wrote it: this session had no network
+route to Neon (egress policy blocks the Neon HTTP host), so the app could not talk to a
+database here. Run it against the preview or production URL before trusting it.
+
+## Still open
+
+- The Inditress passphrase still has not been rotated. Now that humans no longer type it,
+  rotating it only affects agents — the easiest it will ever be.
+- The hub registry entry on the VPS is still titled "Inditress Board".

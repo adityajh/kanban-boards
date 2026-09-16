@@ -17,72 +17,59 @@ const LEGACY_KEY = 'board_key', LEGACY_USER = 'board_user';
 const withCurrent = (list, cur) => (cur && !list.includes(cur) ? [...list, cur] : list);
 
 export default function Board({ slug }) {
-  const KEY = 'board_key:' + slug, USER = 'board_user:' + slug;
-  const [key, setKey] = useState(null);
-  const [user, setUser] = useState(null);
+  const [me, setMe] = useState(undefined); // undefined = still checking, null = signed out
   const [tenant, setTenant] = useState(null);
   const [cards, setCards] = useState([]);
   const [openId, setOpenId] = useState(null);
   const [err, setErr] = useState('');
-  const [pass, setPass] = useState('');
   const [dragCol, setDragCol] = useState(null);
   const [resources, setResources] = useState([]);
   const [resLabel, setResLabel] = useState('');
   const [resUrl, setResUrl] = useState('');
 
   useEffect(() => {
-    setKey(store.get(KEY) || store.get(LEGACY_KEY));
-    setUser(store.get(USER) || store.get(LEGACY_USER));
+    // These used to hold the shared passphrase. Per-person logins replaced it, so clear
+    // the leftovers rather than leave an old secret sitting in localStorage.
+    for (const k of [LEGACY_KEY, LEGACY_USER, 'board_key:' + slug, 'board_user:' + slug]) store.del(k);
     const card = Number(new URLSearchParams(window.location.search).get('card'));
     if (card) setOpenId(card);
-  }, [KEY, USER]);
+  }, [slug]);
 
-  const forgetKey = useCallback((k) => {
-    store.del(KEY);
-    if (store.get(LEGACY_KEY) === k) store.del(LEGACY_KEY);
-    setKey(null); setTenant(null);
-  }, [KEY]);
-
+  // The session cookie is same-origin and HttpOnly, so there is no token to attach here.
   const api = useCallback(async (path, method = 'GET', body) => {
     const r = await fetch('/api' + path, {
       method,
-      // X-Tenant only matters for the admin key; a board passphrase already names its board.
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key, 'X-Tenant': slug },
+      headers: { 'Content-Type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
     });
-    if (r.status === 401) { forgetKey(key); setErr('Wrong passphrase'); throw new Error('Wrong passphrase'); }
+    if (r.status === 401) { setMe(null); setTenant(null); throw new Error('Your session expired'); }
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Error');
     return r.json();
-  }, [key, slug, forgetKey]);
+  }, []);
 
-  // Confirm the passphrase opens *this* board before saving it or showing anything.
+  // A session belongs to one board: signed in on /jbj is not signed in on /inditress.
   useEffect(() => {
-    if (!key) return;
     let live = true;
-    api('/tenant').then(tn => {
-      if (!live) return;
-      if (tn.slug !== slug) {
-        const legacy = store.get(LEGACY_KEY) === key;
-        store.del(KEY); setKey(null);
-        if (!legacy) setErr('That passphrase is for a different board.');
-        return;
-      }
-      store.set(KEY, key);
-      if (store.get(LEGACY_KEY) === key) store.del(LEGACY_KEY);
-      setTenant(tn); setErr('');
-    }).catch(e => live && setErr(e.message));
+    fetch('/api/auth/me')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (live) setMe(d && d.slug === slug ? d.user : null); })
+      .catch(() => { if (live) setMe(null); });
     return () => { live = false; };
-  }, [key, slug, api, KEY]);
+  }, [slug]);
+
+  useEffect(() => {
+    if (!me || me.mustChange) return;
+    let live = true;
+    api('/tenant')
+      .then(tn => { if (live) { setTenant(tn); setErr(''); } })
+      .catch(e => { if (live) setErr(e.message); });
+    return () => { live = false; };
+  }, [me, api]);
 
   const cfg = tenant?.config || {};
   const names = cfg.names || [];
   const tags = cfg.tags || [];
-
-  useEffect(() => {
-    if (!tenant) return;
-    if (user && !names.includes(user)) { setUser(null); return; }
-    if (user) store.set(USER, user);
-  }, [tenant, user]); // eslint-disable-line react-hooks/exhaustive-deps
+  const user = me?.displayName;
 
   useEffect(() => {
     if (!tenant) return;
@@ -108,41 +95,16 @@ export default function Board({ slug }) {
     await api('/resources/' + id, 'DELETE'); setResources(rs => rs.filter(r => r.id !== id));
   };
 
-  useEffect(() => { if (tenant && user) load(); }, [tenant, user, load]);
+  useEffect(() => { if (tenant) load(); }, [tenant, load]);
 
   const dots = cfg.dots > 0 ? Array.from({ length: cfg.dots }, (_, i) => <i key={i} />) : null;
-  const enter = () => { if (pass) { setKey(pass); setPass(''); setErr(''); } };
 
   // ---- gates ----
-  if (!key) {
-    return (
-      <div className="gate">
-        <h1>{slug}</h1>
-        <div className="sub">Project Board</div>
-        <p>Enter the shared passphrase to continue.</p>
-        {err && <div className="err">{err}</div>}
-        <input type="password" value={pass} placeholder="Passphrase"
-          onChange={e => setPass(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') enter(); }} />
-        <button className="btn" style={{ width: '100%' }} onClick={enter}>Enter</button>
-      </div>
-    );
-  }
-  if (!tenant) {
-    return <div className="gate"><p>{err || 'Loading…'}</p></div>;
-  }
-  if (!user) {
-    return (
-      <div className="gate">
-        {dots && <div className="gatedots">{dots}</div>}
-        <h1>Who are you?</h1>
-        <p>So your notes and edits are attributed. No login needed.</p>
-        <div className="names">
-          {names.map(n => <button key={n} onClick={() => setUser(n)}>{n}</button>)}
-        </div>
-      </div>
-    );
-  }
+  // Nothing about the board — not even its name or accent — is shown before sign-in.
+  if (me === undefined) return <div className="gate"><p>Loading…</p></div>;
+  if (!me) return <Login slug={slug} onIn={setMe} />;
+  if (me.mustChange) return <FirstPassword onDone={setMe} />;
+  if (!tenant) return <div className="gate"><p>{err || 'Loading…'}</p></div>;
 
   // ---- card ops ----
   const open = openId != null ? cards.find(c => c.id === openId) : null;
@@ -185,6 +147,10 @@ export default function Board({ slug }) {
   };
 
   const reload = load;
+  const signOut = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    setMe(null); setTenant(null); setCards([]); setResources([]);
+  };
 
   return (
     <>
@@ -192,8 +158,9 @@ export default function Board({ slug }) {
         <div className="brand">{cfg.brand || tenant.name}{cfg.tagline && <small>{cfg.tagline}</small>}</div>
         <div className="spacer" />
         {dots && <div className="dots" title={cfg.dotsTitle || ''}>{dots}</div>}
-        <div className="whoami">You are <b>{user}</b></div>
-        <button className="linkbtn" onClick={() => { store.del(USER); store.del(LEGACY_USER); setUser(null); }}>switch</button>
+        <div className="whoami">You are <b>{user}</b>{me.isAdmin && <span className="badge">admin</span>}</div>
+        <a className="linkbtn" href={'/' + slug + '/settings'}>settings</a>
+        <button className="linkbtn" onClick={signOut}>sign out</button>
       </div>
       {err && <div className="err" style={{ padding: '8px 22px' }}>{err}</div>}
       <div className="board">
@@ -254,6 +221,98 @@ export default function Board({ slug }) {
 
       {open && <Detail card={open} user={user} names={names} tags={tags} api={api} reload={reload} patchCard={patchCard} delCard={delCard} close={closeCard} />}
     </>
+  );
+}
+
+function Login({ slug, onIn }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!username.trim() || !password || busy) return;
+    setBusy(true); setErr('');
+    try {
+      const r = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug, username: username.trim(), password }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setErr(d.error || 'Sign in failed'); setPassword(''); return; }
+      onIn(d.user);
+    } catch {
+      setErr('Could not reach the server');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form className="gate" onSubmit={submit}>
+      <h1>{slug}</h1>
+      <div className="sub">Project Board</div>
+      <p>Sign in with your own username and password.</p>
+      {err && <div className="err">{err}</div>}
+      <input autoFocus value={username} placeholder="Username" autoComplete="username"
+        onChange={e => setUsername(e.target.value)} />
+      <input type="password" value={password} placeholder="Password" autoComplete="current-password"
+        onChange={e => setPassword(e.target.value)} />
+      <button className="btn" style={{ width: '100%' }} disabled={busy}>
+        {busy ? 'Signing in…' : 'Sign in'}
+      </button>
+      <p className="fineprint">Lost your password? Ask your board admin to reset it.</p>
+    </form>
+  );
+}
+
+// Shown once, after a password that somebody else generated. The board stays out of reach
+// until it is replaced.
+function FirstPassword({ onDone }) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [again, setAgain] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    if (next !== again) { setErr('The two new passwords do not match'); return; }
+    setBusy(true); setErr('');
+    try {
+      const r = await fetch('/api/auth/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: current, newPassword: next }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setErr(d.error || 'Could not change the password'); return; }
+      onDone(d.user);
+    } catch {
+      setErr('Could not reach the server');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form className="gate" onSubmit={submit}>
+      <h1>Set your password</h1>
+      <p>You are signed in with a password someone else generated. Choose your own to continue.</p>
+      {err && <div className="err">{err}</div>}
+      <input type="password" value={current} placeholder="Password you were given"
+        autoComplete="current-password" onChange={e => setCurrent(e.target.value)} />
+      <input type="password" value={next} placeholder="New password" autoComplete="new-password"
+        onChange={e => setNext(e.target.value)} />
+      <input type="password" value={again} placeholder="New password again" autoComplete="new-password"
+        onChange={e => setAgain(e.target.value)} />
+      <button className="btn" style={{ width: '100%' }} disabled={busy}>
+        {busy ? 'Saving…' : 'Save and continue'}
+      </button>
+    </form>
   );
 }
 

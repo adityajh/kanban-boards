@@ -1,0 +1,40 @@
+import { sql } from '../../../../lib/db';
+import { json, options } from '../../../../lib/http';
+import {
+  sessionCaller, verifyPassword, hashPassword, startSession,
+  dropOtherSessions, endSession, publicUser, MIN_PASSWORD,
+} from '../../../../lib/auth';
+export const dynamic = 'force-dynamic';
+export async function OPTIONS() { return options(); }
+
+// Self-service only: you can change your own password, never anyone else's. An admin
+// resetting someone else goes through /api/settings/users/[id].
+export async function POST(req) {
+  const s = await sessionCaller(req);
+  if (!s) return json({ error: 'unauthorized' }, 401);
+
+  const b = await req.json().catch(() => ({}));
+  const next = String(b.newPassword || '');
+  if (next.length < MIN_PASSWORD) {
+    return json({ error: `New password must be at least ${MIN_PASSWORD} characters` }, 400);
+  }
+
+  const [row] = await sql`select password_hash from users where id=${s.user.id}`;
+  if (!row || !(await verifyPassword(String(b.currentPassword || ''), row.password_hash))) {
+    return json({ error: 'Current password is wrong' }, 403);
+  }
+  if (await verifyPassword(next, row.password_hash)) {
+    return json({ error: 'New password must be different from the current one' }, 400);
+  }
+
+  await sql`update users set password_hash=${await hashPassword(next)},
+      must_change=false, updated_at=now() where id=${s.user.id}`;
+
+  // Rotate this session and drop every other one, so a password change also evicts a
+  // session someone else may be holding.
+  await dropOtherSessions(s.user.id, req);
+  await endSession(req);
+  const cookie = await startSession(s.user, req);
+
+  return json({ user: { ...publicUser(s.user), mustChange: false } }, 200, cookie);
+}
