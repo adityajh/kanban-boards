@@ -137,7 +137,15 @@ export default function Admin() {
             {created && (
               <div className="created">
                 Created <a href={'/' + created.tenant.slug}>/{created.tenant.slug}</a>.
-                Passphrase (shown once, copy it now): <code>{created.passphrase}</code>
+                Both secrets below are shown once — copy them now.
+                <div>Passphrase (for agents): <code>{created.passphrase}</code></div>
+                {created.admin && (
+                  <div>
+                    Admin sign-in for <b>{created.admin.displayName}</b>:{' '}
+                    <code>{created.admin.username}</code> / <code>{created.admin.password}</code>
+                    {' '}— they will be asked to change it on first sign-in.
+                  </div>
+                )}
               </div>
             )}
           </section>
