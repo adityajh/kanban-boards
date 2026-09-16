@@ -150,11 +150,21 @@ check "an agent still sets its own author" "Rahul" \
 
 echo "-- changing a password"
 check "wrong current password -> 403" 403 "$(code -X POST -b $JAR -H "$CT" $B/api/auth/password -d '{"currentPassword":"nope","newPassword":"brand-new-password"}')"
-check "too short -> 400" 400 "$(code -X POST -b $JAR -H "$CT" $B/api/auth/password -d "{\"currentPassword\":\"$MEMBER_PW\",\"newPassword\":\"short\"}")"
-check "same as current -> 400" 400 "$(code -X POST -b $JAR -H "$CT" $B/api/auth/password -d "{\"currentPassword\":\"$MEMBER_PW\",\"newPassword\":\"$MEMBER_PW\"}")"
+# bash 3.2 (macOS) mangles an escaped-quote body written inline inside "$( … )", sending
+# an empty one. An empty body reads as a missing newPassword, which is "too short" — so the
+# two negative checks below would pass for the wrong reason and only the positive one would
+# show it. Build each body in a variable first. (Same trap as the tenant-create body above.)
+PW_SHORT="{\"currentPassword\":\"$MEMBER_PW\",\"newPassword\":\"short\"}"
+PW_SAME="{\"currentPassword\":\"$MEMBER_PW\",\"newPassword\":\"$MEMBER_PW\"}"
+PW_NEW="{\"currentPassword\":\"$MEMBER_PW\",\"newPassword\":\"brand-new-password\"}"
+# Guard the guard: if the body ever arrives empty again, this fails loudly instead of
+# quietly turning the checks below into tautologies.
+check "the change-password body survives the shell" True "$(python3 -c 'import json,sys; print(bool(json.loads(sys.argv[1]).get("newPassword")))' "$PW_NEW")"
+check "too short -> 400" 400 "$(code -X POST -b $JAR -H "$CT" $B/api/auth/password -d "$PW_SHORT")"
+check "same as current -> 400" 400 "$(code -X POST -b $JAR -H "$CT" $B/api/auth/password -d "$PW_SAME")"
 # A second browser for the same person, to prove a change evicts it.
 check "second session logs in" 200 "$(login jbj zz-test-member "$MEMBER_PW" $JAR2)"
-check "change succeeds" 200 "$(code -X POST -b $JAR -c $JAR -H "$CT" $B/api/auth/password -d "{\"currentPassword\":\"$MEMBER_PW\",\"newPassword\":\"brand-new-password\"}")"
+check "change succeeds" 200 "$(code -X POST -b $JAR -c $JAR -H "$CT" $B/api/auth/password -d "$PW_NEW")"
 check "mustChange is cleared" False "$(curl -s -b $JAR $B/api/auth/me | jget 'd["user"]["mustChange"]')"
 check "the other session is evicted" 401 "$(code -b $JAR2 $B/api/auth/me)"
 check "old password no longer works" 401 "$(login jbj zz-test-member "$MEMBER_PW" $JAR2)"
