@@ -230,13 +230,18 @@ request never arrived. Only the positive check next to it exposed the problem.
 
 ## Still open
 
-- **Nobody has signed in through a browser yet.** The API is proven by the suite, but as of
-  the last check every account still has `last_login_at = null`, so the login screen, the
-  forced first-password change and the settings screens have not been exercised by a human.
-  That is the last untested surface.
-- Everyone is still on the password they were issued, so every account shows
-  `must_change`. They each replace it at first sign-in, after which the copies in
-  `kanban-boards.env` are stale and should be deleted.
+- **Rollout is partial.** Adi has signed in to `inditress` and `zealxle` and changed both
+  passwords; the browser flow — login, forced first-password change, settings, promoting
+  someone to admin — is confirmed working on both. `jbj` has not been touched: nobody has
+  signed in and Rahul has not been sent his login. That board is also still empty.
+- **Everyone else is still on the password they were issued** (`must_change = true`). Those
+  values were handed over by WhatsApp and are the only copies; once a person signs in and
+  replaces theirs, any copy in `kanban-boards.env` is dead and should be deleted. To see who
+  is still on an issued password:
+  `select t.slug, u.username, u.must_change, u.last_login_at from users u join tenants t on t.id=u.tenant_id order by t.id, u.username;`
+- A forgotten password is not recoverable by anyone, including whoever issued it. A board
+  admin resets it in Settings → People, which prints a new one-time password and signs that
+  person out everywhere.
 - The Inditress passphrase still has not been rotated. Now that humans no longer type it,
   rotating it only affects agents — the easiest it will ever be.
 - The hub registry entry on the VPS is still titled "Inditress Board".
