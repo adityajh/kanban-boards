@@ -31,6 +31,7 @@ Neon Postgres. Started life as the Inditress board.
 | A person | username + password → `board_session` cookie | every board they are a member of; settings; their own password |
 | A board admin | as above, with `is_admin` on that board's membership | plus that board's settings and people — nothing on any other board |
 | An agent | board passphrase as a bearer token | the board's cards and resources — **not** settings or passwords |
+| A master admin | username + password, with `people.is_master` | plus creating, configuring and deleting **boards** — but no board's contents until they join it |
 | Adi | `ADMIN_KEY` (+ `X-Tenant`) | every board, `/api/admin/*`, and any board's settings |
 
 Identity and membership are separate. `people` is who someone is — a globally unique
@@ -49,7 +50,14 @@ only `sha256(token)`; the token itself lives in an HttpOnly `SameSite=Lax` cooki
 same-origin only.
 
 Every board has at least one admin: one is created with the board, and the last one cannot
-be demoted or removed. Taking someone off their last board removes their account too — an
+be demoted or removed.
+
+**Master admin** (`people.is_master`) is a separate thing from board admin: it is about
+managing boards, not being on one. Master admins get a **Boards** tab in settings listing
+every board, where they can create, rotate a passphrase, join, or delete. Joining is
+deliberate and leaves a membership row — there is no rule that quietly opens every board to
+them, so "access means a membership" stays the only rule. Granting master admin has no UI;
+set the column directly (migration 005 bootstraps Adi). Taking someone off their last board removes their account too — an
 account on no boards can never be reached or removed again.
 
 ## Layout

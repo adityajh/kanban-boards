@@ -27,6 +27,19 @@ export default function Settings({ slug }) {
     return d;
   }, [slug]);
 
+  // Board management spans every board, so these calls deliberately send no X-Tenant:
+  // with one, access would be gated on membership of the board you happen to be viewing.
+  const adminApi = useCallback(async (path, method = 'GET', body) => {
+    const r = await fetch('/api/admin' + path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'Error');
+    return d;
+  }, []);
+
   const load = useCallback(() => {
     api('/settings')
       .then(d => { setData(d); setErr(''); })
@@ -54,7 +67,9 @@ export default function Settings({ slug }) {
   if (!data) return <div className="gate"><p>Loading…</p></div>;
 
   const cfg = data.tenant.config || {};
-  const tabs = data.isAdmin ? TABS : TABS.filter(t => t.id === 'profile');
+  const isMaster = data.me?.isMaster === true;
+  let tabs = data.isAdmin ? TABS : TABS.filter(t => t.id === 'profile');
+  if (isMaster) tabs = [...tabs, { id: 'boards', label: 'Boards' }];
 
   return (
     <>
@@ -76,6 +91,7 @@ export default function Settings({ slug }) {
         {tab === 'profile' && <Profile me={data.me} api={api} />}
         {tab === 'board' && data.isAdmin && <BoardSettings tenant={data.tenant} api={api} onSaved={load} />}
         {tab === 'people' && data.isAdmin && <People users={data.users} me={data.me} api={api} onChanged={load} />}
+        {tab === 'boards' && isMaster && <Boards adminApi={adminApi} here={slug} />}
       </div>
     </>
   );
@@ -334,6 +350,162 @@ function People({ users, me, api, onChanged }) {
               onChange={e => setIsAdmin(e.target.checked)} /> Board admin</span>
           </label>
           <button className="btn" disabled={busy}>{busy ? 'Adding…' : 'Add person'}</button>
+        </form>
+      </section>
+    </>
+  );
+}
+
+// Master-admin only. Being one means managing boards, not being on them — so a board you
+// have not joined shows a Join button rather than opening.
+function Boards({ adminApi, here }) {
+  const [boards, setBoards] = useState(null);
+  const [mine, setMine] = useState([]);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [issued, setIssued] = useState(null);   // a one-time secret to show once
+  const [form, setForm] = useState({ name: '', slug: '', names: '', tags: '', accent: '#D67D2E' });
+
+  const load = useCallback(() => {
+    Promise.all([adminApi('/tenants'), fetch('/api/auth/me').then(r => r.json())])
+      .then(([bs, me]) => { setBoards(bs); setMine((me.boards || []).map(b => b.slug)); setErr(''); })
+      .catch(e => setErr(e.message));
+  }, [adminApi]);
+  useEffect(() => { load(); }, [load]);
+
+  const run = async (fn) => {
+    setErr(''); setBusy(true);
+    try { await fn(); load(); }
+    catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const create = (e) => {
+    e.preventDefault();
+    if (busy) return;
+    run(async () => {
+      const d = await adminApi('/tenants', 'POST', {
+        slug: form.slug.trim(), name: form.name.trim(),
+        config: { names: form.names, tags: form.tags, accent: form.accent },
+      });
+      setIssued({
+        kind: 'created', slug: d.tenant.slug, passphrase: d.passphrase, admin: d.admin,
+      });
+      setForm({ name: '', slug: '', names: '', tags: '', accent: '#D67D2E' });
+    });
+  };
+
+  const join = (b) => run(() => adminApi('/tenants/' + b.slug + '/join', 'POST'));
+
+  const rotate = (b) => {
+    if (!confirm(`Rotate ${b.name}'s passphrase? Any agent using the old one stops working until you update it.`)) return;
+    run(async () => {
+      const d = await adminApi('/tenants/' + b.slug, 'PATCH', { rotate: true });
+      setIssued({ kind: 'rotated', slug: b.slug, passphrase: d.passphrase });
+    });
+  };
+
+  // Deleting cascades everything on the board. The slug must be typed, and the server
+  // requires it back as well — this confirmation is not the only thing standing in the way.
+  const remove = (b) => {
+    const typed = prompt(
+      `This permanently deletes ${b.name} and every card, subtask, link, note and resource on it.\n\n` +
+      `This cannot be undone.\n\nType ${b.slug} to confirm:`);
+    if (typed !== b.slug) { if (typed !== null) setErr('That did not match — nothing was deleted.'); return; }
+    run(async () => {
+      const d = await adminApi('/tenants/' + b.slug, 'DELETE', { confirm: b.slug });
+      setIssued({ kind: 'deleted', ...d });
+    });
+  };
+
+  if (err && !boards) return <section><h3>Boards</h3><div className="err">{err}</div></section>;
+  if (!boards) return <section><h3>Boards</h3><p className="empty">Loading…</p></section>;
+
+  return (
+    <>
+      <section>
+        <h3>All boards <span>{boards.length}</span></h3>
+        <p className="hint">
+          You can see and manage every board. Opening one still needs you to be on it, the
+          same as anyone else — join a board and you become an admin of it.
+        </p>
+        {err && <div className="err">{err}</div>}
+        <div className="ascroll">
+          <table className="atable">
+            <thead><tr><th>Board</th><th>People</th><th>Created</th><th></th></tr></thead>
+            <tbody>
+              {boards.map(b => {
+                const joined = mine.includes(b.slug);
+                return (
+                  <tr key={b.slug}>
+                    <td>
+                      {joined ? <a href={'/' + b.slug}>{b.name}</a> : b.name}
+                      <span className="slug">/{b.slug}</span>
+                      {b.slug === here && <span className="slug">you are here</span>}
+                    </td>
+                    <td>{(b.config?.names || []).length}</td>
+                    <td>{new Date(b.created_at).toLocaleDateString()}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      {!joined && <button className="linkbtn" disabled={busy} onClick={() => join(b)}>join</button>}
+                      <button className="linkbtn" disabled={busy} onClick={() => rotate(b)}>rotate passphrase</button>
+                      <button className="linkbtn danger" disabled={busy} onClick={() => remove(b)}>delete</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {issued && (
+          <div className="created">
+            {issued.kind === 'created' && (
+              <>
+                Created <a href={'/' + issued.slug}>/{issued.slug}</a>. Both secrets are shown once.
+                <div>Passphrase (for agents): <code>{issued.passphrase}</code></div>
+                {issued.admin && (issued.admin.password
+                  ? <div>Admin: <code>{issued.admin.username}</code> / <code>{issued.admin.password}</code></div>
+                  : <div>Admin is <b>{issued.admin.displayName}</b>, who already had an account.</div>)}
+              </>
+            )}
+            {issued.kind === 'rotated' && (
+              <>New passphrase for <b>{issued.slug}</b>, shown once: <code>{issued.passphrase}</code>
+                <div className="hint" style={{ margin: '6px 0 0' }}>
+                  Update any agent using the old one.
+                </div></>
+            )}
+            {issued.kind === 'deleted' && (
+              <>Deleted <b>{issued.deleted.name}</b> — {issued.deleted.cards} cards,{' '}
+                {issued.deleted.subtasks} subtasks, {issued.deleted.links} links,{' '}
+                {issued.deleted.notes} notes, {issued.deleted.resources} resources,{' '}
+                {issued.deleted.people} memberships.
+                {issued.accountsRemoved.length > 0 &&
+                  <div>Accounts removed with it: {issued.accountsRemoved.join(', ')}</div>}
+              </>
+            )}
+            <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setIssued(null)}>Done</button>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h3>New board</h3>
+        <p className="hint">
+          The passphrase and the first admin&apos;s password are both shown once, here, and
+          never again.
+        </p>
+        <form className="aform" onSubmit={create}>
+          <label>Client name<input required placeholder="JBJ Jeweller"
+            value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} /></label>
+          <label>URL slug<input required placeholder="jbj" pattern="[a-z0-9][a-z0-9\-]{1,39}"
+            value={form.slug} onChange={e => setForm(f => ({ ...f, slug: e.target.value }))} /></label>
+          <label>People (comma separated)<input required placeholder="Adi, Rahul"
+            value={form.names} onChange={e => setForm(f => ({ ...f, names: e.target.value }))} /></label>
+          <label>Tags (optional)<input placeholder="A, B"
+            value={form.tags} onChange={e => setForm(f => ({ ...f, tags: e.target.value }))} /></label>
+          <label>Accent<input type="color"
+            value={form.accent} onChange={e => setForm(f => ({ ...f, accent: e.target.value }))} /></label>
+          <button className="btn" disabled={busy}>{busy ? 'Creating…' : 'Create board'}</button>
         </form>
       </section>
     </>

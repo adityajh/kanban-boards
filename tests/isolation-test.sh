@@ -263,6 +263,39 @@ echo "-- usernames"
 check "bad username -> 400" 400 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users -d '{"username":"no spaces"}')"
 check "admin key cannot reach a person who is not on the named board" 404 "$(code -H "$ADM" -H "$IT" -X DELETE $B/api/settings/users/$MEMBER_ID)"
 
+echo "== master admin"
+# A signed-in board admin is not a master admin: managing boards is a separate thing from
+# running one, and must not leak from the latter.
+check "a board member cannot list boards" 401 "$(code -b $JAR $B/api/admin/tenants)"
+check "a board member cannot create a board" 401 "$(code -X POST -b $JAR -H "$CT" $B/api/admin/tenants -d '{"slug":"zz-sneak","name":"x","config":{"names":"a"}}')"
+check "a board member cannot delete a board" 401 "$(code -X DELETE -b $JAR -H "$CT" $B/api/admin/tenants/jbj -d '{"confirm":"jbj"}')"
+check "a board member cannot join a board" 401 "$(code -X POST -b $JAR $B/api/admin/tenants/inditress/join)"
+check "a passphrase cannot list boards" 401 "$(code -H "$JBJ" $B/api/admin/tenants)"
+
+echo "-- creating and deleting a board"
+NEWB="{\"slug\":\"zz-test-board\",\"name\":\"ZZ Test Board\",\"config\":{\"names\":\"ZZ Tester\"}}"
+MADE=$(curl -s -X POST -H "$ADM" -H "$CT" -d "$NEWB" $B/api/admin/tenants)
+check "a board is created" "zz-test-board" "$(echo "$MADE" | jget 'd.get("tenant",{}).get("slug","")')"
+check "with a passphrase shown once" True "$([ -n "$(echo "$MADE" | jget 'd.get("passphrase","")')" ] && echo True || echo False)"
+check "and an admin account" True "$([ -n "$(echo "$MADE" | jget 'd.get("admin",{}).get("username","")')" ] && echo True || echo False)"
+check "it appears in the board list" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug']=='zz-test-board' for b in d)")"
+
+echo "-- deletion will not happen by accident"
+check "no confirmation -> 400" 400 "$(code -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/zz-test-board -d '{}')"
+check "wrong confirmation -> 400" 400 "$(code -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/zz-test-board -d '{"confirm":"jbj"}')"
+check "the board is still there" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug']=='zz-test-board' for b in d)")"
+check "a board that does not exist -> 404" 404 "$(code -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/zz-no-such-board -d '{"confirm":"zz-no-such-board"}')"
+GONE=$(curl -s -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/zz-test-board -d '{"confirm":"zz-test-board"}')
+check "the right confirmation deletes it" "zz-test-board" "$(echo "$GONE" | jget 'd.get("deleted",{}).get("slug","")')"
+check "and says what it destroyed" True "$(echo "$GONE" | jget '"cards" in d.get("deleted",{})')"
+check "its lone account went with it" True "$(echo "$GONE" | jget "'zztester' in d.get('accountsRemoved',[])")"
+check "it is gone from the board list" False "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug']=='zz-test-board' for b in d)")"
+check "its passphrase no longer opens anything" 401 "$(code -H "Authorization: Bearer $(echo "$MADE" | jget 'd["passphrase"]')" $B/api/cards)"
+
+echo "-- the real boards are untouched by all of that"
+check "still four boards or more" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget 'len(d) >= 2')"
+check "inditress still there" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug']=='inditress' for b in d)")"
+
 echo "== cleanup"
 curl -s -o /dev/null -X DELETE -H "$JBJ" $B/api/cards/$JN_CARD
 LAST=$(curl -s -X DELETE -H "$ADM" -H "$JT" $B/api/settings/users/$MEMBER_ID)

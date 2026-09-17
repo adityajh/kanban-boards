@@ -105,7 +105,16 @@ The last admin on a board cannot be demoted or removed (`409`), and you cannot r
 yourself. Usernames are 2–32 chars of `a-z 0-9 . _ -`, case-insensitive and **global** —
 one username is one person across every board.
 
-## Admin endpoints (ADMIN_KEY only)
+## Board-management endpoints
+
+Creating, configuring and deleting boards. Two ways in: `ADMIN_KEY`, which belongs to
+nobody and is the emergency route, or a signed-in **master admin** (`people.is_master`),
+whose actions are attributable to an account.
+
+Being a master admin grants **no access to any board's contents** — opening a board still
+needs a membership, the same as for everyone else. `/tenants/:slug/join` is how a master
+admin gives themselves one, which leaves a row recording it. A board admin is not a master
+admin and gets `401` here.
 
 | Method | Path | Body | Does |
 |--------|------|------|------|
@@ -113,6 +122,8 @@ one username is one person across every board.
 | GET | `/admin/tenants` | — | List boards (never returns passphrases) |
 | POST | `/admin/tenants` | `{slug, name, passphrase?, adminUsername?, config: {names, tags?, brand?, tagline?, accent?}}` | Create a board **and its first admin** (`adminUsername` defaults to the first person listed). Returns `{tenant, passphrase, admin:{username, displayName, password, existing}}`. If that admin already has an account they join with their existing password and `password` is `null` |
 | PATCH | `/admin/tenants/:slug` | `{name?, config?, rotate?, passphrase?}` | Rename, change settings (merged), or rotate the passphrase |
+| POST | `/admin/tenants/:slug/join` | — | Master admin only (not `ADMIN_KEY`, which is not a person) — join that board as an admin of it |
+| DELETE | `/admin/tenants/:slug` | `{confirm: "<slug>"}` | **Irreversible.** Deletes the board and cascades every card, subtask, link, note and resource on it. The slug must be echoed back in `confirm` or it returns `400` — enforced server-side, so a bare DELETE cannot destroy a board. Returns `{deleted: {...counts}, accountsRemoved}` |
 
 `names` and `tags` accept an array or a comma-separated string. `accent` is `#rrggbb`.
 

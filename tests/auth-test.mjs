@@ -117,8 +117,21 @@ await t('no password_hash in output', () => {
     id: 1, username: 'adi', display_name: 'Adi',
     must_change: false, password_hash: 'scrypt$...secret',
   });
-  assert.deepStrictEqual(Object.keys(out).sort(), ['displayName', 'id', 'mustChange', 'username']);
+  assert.deepStrictEqual(Object.keys(out).sort(),
+    ['displayName', 'id', 'isMaster', 'mustChange', 'username']);
   assert.ok(!JSON.stringify(out).includes('secret'));
+});
+await t('isMaster is false unless explicitly true', () => {
+  // Master admin can create and delete boards, so it must never be true by accident —
+  // a missing column, a row from an older query, or any non-boolean must read as false.
+  for (const v of [undefined, null, false, 0, '', 'false', 'true', 1, {}]) {
+    assert.strictEqual(
+      publicPerson({ id: 1, username: 'a', display_name: 'A', must_change: false, is_master: v }).isMaster,
+      false, `is_master=${JSON.stringify(v)} must not grant master`);
+  }
+  assert.strictEqual(
+    publicPerson({ id: 1, username: 'a', display_name: 'A', must_change: false, is_master: true }).isMaster,
+    true);
 });
 await t('admin is never part of a person', () => {
   // Running one board says nothing about any other, so is_admin must come from the
