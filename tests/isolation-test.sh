@@ -35,10 +35,19 @@ if [ "$PRE" != "401" ] || ! echo "$PRE_BODY" | grep -q '"error"'; then
   echo "  GET /api/auth/me returned $PRE and did not look like our JSON:"
   echo "  ${PRE_BODY:0:200}"
   echo
-  if echo "$PRE_BODY" | grep -qi 'vercel\|authenticat\|<html'; then
-    echo "  That looks like Vercel Deployment Protection, not the app."
-    echo "  Set VERCEL_BYPASS to the project's Protection Bypass for Automation secret"
-    echo "  (Vercel -> Settings -> Deployment Protection), then re-run."
+  # A 3xx, a "Redirecting..." body or an SSO page all mean the same thing: something is
+  # standing in front of the app. On Vercel that is Deployment Protection.
+  if [ "$PRE" -ge 300 ] && [ "$PRE" -lt 400 ] 2>/dev/null \
+     || echo "$PRE_BODY" | grep -qi 'redirecting\|vercel\|authenticat\|<html'; then
+    echo "  Something is in front of the app — on Vercel that is Deployment Protection."
+    if [ -z "${VERCEL_BYPASS:-}" ]; then
+      echo "  VERCEL_BYPASS is not set, so the suite sent no bypass header."
+      echo "  Either export it (Vercel -> Settings -> Deployment Protection ->"
+      echo "  Protection Bypass for Automation), or turn protection off for previews."
+    else
+      echo "  VERCEL_BYPASS is set but was rejected — check the secret is current,"
+      echo "  and that it belongs to this project."
+    fi
   else
     echo "  Check the URL, and that the deployment finished building."
   fi
