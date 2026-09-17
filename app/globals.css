@@ -167,3 +167,9 @@ textarea.desc{width:100%;min-height:56px;border:1px solid var(--line-2);border-r
 .atable .linkbtn:disabled:hover{color:var(--ink-60)}
 .gate .fineprint{font-size:11px;color:var(--ink-40);margin:14px 0 0}
 a.linkbtn{text-decoration:none;display:inline-block}
+.switcher{font-size:11px;letter-spacing:.06em;padding:5px 8px;border:1px solid var(--line-2);
+  border-radius:7px;background:var(--card);color:var(--ink);font-family:inherit;max-width:190px}
+.switcher:focus{outline:2px solid var(--accent);outline-offset:1px}
+.gate .names a{flex:1;min-width:92px;padding:12px;border:1px solid var(--line-2);border-radius:8px;
+  background:var(--card);font-size:14px;color:var(--ink);letter-spacing:.02em;text-decoration:none}
+.gate .names a:hover{border-color:var(--accent);color:var(--accent)}

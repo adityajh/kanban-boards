@@ -15,16 +15,17 @@ export default function Settings({ slug }) {
   const [tab, setTab] = useState('profile');
   const [err, setErr] = useState('');
 
+  // A session names a person, not a board, so every call says which board it means.
   const api = useCallback(async (path, method = 'GET', body) => {
     const r = await fetch('/api' + path, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Tenant': slug },
       body: body ? JSON.stringify(body) : undefined,
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || 'Error');
     return d;
-  }, []);
+  }, [slug]);
 
   const load = useCallback(() => {
     api('/settings')
@@ -126,7 +127,7 @@ function Profile({ me, api }) {
       </section>
       <section>
         <h3>Change password</h3>
-        <p className="hint">Changing it signs out every other browser you are signed in on.</p>
+        <p className="hint">One password covers every board you are on. Changing it signs you out of every other browser.</p>
         {msg && <div className="ok">{msg}</div>}
         {err && <div className="err">{err}</div>}
         <form className="aform" onSubmit={submit}>
@@ -234,13 +235,13 @@ function People({ users, me, api, onChanged }) {
       const d = await api('/settings/users', 'POST', {
         username: username.trim(), displayName: displayName.trim() || username.trim(), isAdmin,
       });
-      setIssued({ ...d.user, password: d.password });
+      setIssued({ ...d.user, password: d.password, existing: d.existing });
       setUsername(''); setDisplayName(''); setIsAdmin(false);
     });
   };
 
   const reset = (u) => {
-    if (!confirm(`Reset ${u.displayName}'s password? Their current one stops working immediately.`)) return;
+    if (!confirm(`Reset ${u.displayName}'s password? They have one password across every board they are on, so this replaces it everywhere and signs them out.`)) return;
     run(async () => {
       const d = await api('/settings/users/' + u.id, 'PATCH', { resetPassword: true });
       setIssued({ ...d.user, password: d.password });
@@ -251,7 +252,7 @@ function People({ users, me, api, onChanged }) {
     run(() => api('/settings/users/' + u.id, 'PATCH', { isAdmin: !u.isAdmin }));
 
   const remove = (u) => {
-    if (!confirm(`Remove ${u.displayName} from this board? They will not be able to sign in.`)) return;
+    if (!confirm(`Remove ${u.displayName} from this board? Their account and other boards are unaffected.`)) return;
     run(() => api('/settings/users/' + u.id, 'DELETE'));
   };
 
@@ -260,8 +261,9 @@ function People({ users, me, api, onChanged }) {
       <section>
         <h3>People <span>{users.length}</span></h3>
         <p className="hint">
-          Everyone who can sign in to this board. Removing someone leaves their name on any
-          work already assigned to them.
+          Everyone who can sign in to this board. Removing takes them off this board only —
+          their account and any other board they are on are untouched, and their name stays
+          on work already assigned to them.
         </p>
         {err && <div className="err">{err}</div>}
         <div className="ascroll">
@@ -292,11 +294,23 @@ function People({ users, me, api, onChanged }) {
 
         {issued && (
           <div className="created">
-            Password for <b>{issued.displayName}</b> (<code>{issued.username}</code>):{' '}
-            <code>{issued.password}</code>
-            <div className="hint" style={{ margin: '6px 0 0' }}>
-              Shown once — copy it now. They will be asked to change it when they sign in.
-            </div>
+            {issued.password ? (
+              <>
+                Password for <b>{issued.displayName}</b> (<code>{issued.username}</code>):{' '}
+                <code>{issued.password}</code>
+                <div className="hint" style={{ margin: '6px 0 0' }}>
+                  Shown once — copy it now. They will be asked to change it when they sign in.
+                </div>
+              </>
+            ) : (
+              <>
+                <b>{issued.displayName}</b> (<code>{issued.username}</code>) already had an
+                account and has been added to this board.
+                <div className="hint" style={{ margin: '6px 0 0' }}>
+                  They sign in with the password they already use — there is nothing to send them.
+                </div>
+              </>
+            )}
             <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setIssued(null)}>
               Done
             </button>
@@ -306,6 +320,10 @@ function People({ users, me, api, onChanged }) {
 
       <section>
         <h3>Add someone</h3>
+        <p className="hint">
+          If this username already has an account on another board, they join with the
+          password they already use and no new one is issued.
+        </p>
         <form className="aform" onSubmit={add}>
           <label>Username<input value={username} placeholder="rahul"
             onChange={e => setUsername(e.target.value)} /></label>

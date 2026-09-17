@@ -4,7 +4,7 @@
 import assert from 'assert';
 import {
   hashPassword, verifyPassword, burnVerify, newPassword, validUsername,
-  readCookie, clearSessionCookie, MIN_PASSWORD, publicUser, SESSION_COOKIE,
+  readCookie, clearSessionCookie, MIN_PASSWORD, publicPerson, SESSION_COOKIE,
 } from '../lib/password.mjs';
 
 let pass = 0, fail = 0;
@@ -111,14 +111,23 @@ await t('clear cookie expires immediately', () => {
   assert.ok(v.includes('SameSite=Lax'), 'must stay SameSite=Lax');
 });
 
-console.log('== publicUser never leaks the hash');
+console.log('== publicPerson never leaks the hash, and carries no admin flag');
 await t('no password_hash in output', () => {
-  const out = publicUser({
-    id: 1, tenant_id: 1, username: 'adi', display_name: 'Adi',
-    is_admin: true, must_change: false, password_hash: 'scrypt$...secret',
+  const out = publicPerson({
+    id: 1, username: 'adi', display_name: 'Adi',
+    must_change: false, password_hash: 'scrypt$...secret',
   });
-  assert.deepStrictEqual(Object.keys(out).sort(), ['displayName', 'id', 'isAdmin', 'mustChange', 'username']);
+  assert.deepStrictEqual(Object.keys(out).sort(), ['displayName', 'id', 'mustChange', 'username']);
   assert.ok(!JSON.stringify(out).includes('secret'));
+});
+await t('admin is never part of a person', () => {
+  // Running one board says nothing about any other, so is_admin must come from the
+  // membership of the board being acted on, never ride along with the identity.
+  const out = publicPerson({
+    id: 1, username: 'adi', display_name: 'Adi', must_change: false,
+    password_hash: 'x', is_admin: true,
+  });
+  assert.ok(!('isAdmin' in out), 'publicPerson must not carry is_admin');
 });
 
 console.log(`\npassed ${pass}, failed ${fail}`);

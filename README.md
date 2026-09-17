@@ -28,19 +28,29 @@ Neon Postgres. Started life as the Inditress board.
 
 | | Signs in as | Reaches |
 |---|---|---|
-| A person | username + password → `board_session` cookie | their board; settings; their own password |
-| A board admin | as above, with `is_admin` | plus board settings and the board's people |
+| A person | username + password → `board_session` cookie | every board they are a member of; settings; their own password |
+| A board admin | as above, with `is_admin` on that board's membership | plus that board's settings and people — nothing on any other board |
 | An agent | board passphrase as a bearer token | the board's cards and resources — **not** settings or passwords |
 | Adi | `ADMIN_KEY` (+ `X-Tenant`) | every board, `/api/admin/*`, and any board's settings |
 
-Users live in `users`, scoped by `tenant_id` exactly like cards: a username is unique
-within a board, not across the app. Passwords are scrypt with a per-password salt, stored
-as `scrypt$N$r$p$salt$hash` — **not** peppered with `KEY_PEPPER`, so rotating the pepper
-does not lock everyone out. Sessions store only `sha256(token)`; the token itself lives in
-an HttpOnly `SameSite=Lax` cookie, so it is same-origin only.
+Identity and membership are separate. `people` is who someone is — a globally unique
+username and **one password**. `memberships` is which boards they are on and whether they
+run each one, so admin is per board and never travels with the person. Somebody on four
+boards is one account with one password.
+
+A session names a person, not a board. Each request says which board it means
+(`X-Tenant: <slug>`) and `withTenant()` proves membership of it — so the board is no longer
+read off the credential, but access still resolves to exactly one tenant and a non-member is
+refused indistinguishably from a board that does not exist.
+
+Passwords are scrypt with a per-password salt, stored as `scrypt$N$r$p$salt$hash` — **not**
+peppered with `KEY_PEPPER`, so rotating the pepper does not lock everyone out. Sessions store
+only `sha256(token)`; the token itself lives in an HttpOnly `SameSite=Lax` cookie, so it is
+same-origin only.
 
 Every board has at least one admin: one is created with the board, and the last one cannot
-be demoted or deleted.
+be demoted or removed. Taking someone off their last board removes their account too — an
+account on no boards can never be reached or removed again.
 
 ## Layout
 
@@ -49,7 +59,8 @@ be demoted or deleted.
 - `app/api/**`: REST API (board routes + `admin/`)
 - `app/[slug]/settings/page.js` + `components/Settings.js`: per-board settings
 - `lib/tenant.js`: tenant resolution, route wrappers (`withTenant`, `withUser`, `withAdmin`), config normalisation
-- `lib/auth.js`: sessions · `lib/password.mjs`: scrypt hashing, cookies (pure, unit-tested)
+- `lib/auth.js`: sessions and membership lookups · `lib/people.js`: board rosters
+- `lib/password.mjs`: scrypt hashing, cookies (pure, no imports, unit-tested)
 - `lib/http.js`: JSON/CORS helpers · `tests/`: `auth-test.mjs` (no DB) and `isolation-test.sh` (live)
 - `schema.sql`: full schema for a fresh DB · `migrations/`: upgrades for the existing DB
 - `public/docs/`: Inditress brand docs (public URLs, kept so existing Library links work;
@@ -81,7 +92,9 @@ each shown **once**: the board passphrase (for agents) and the first admin's pas
 both in the credentials env file. Or `POST /api/admin/tenants` (see API.md).
 
 That admin signs in at `/<slug>`, is made to set their own password, then adds everyone else
-under **Settings → People**. Each person's first password is generated and shown once.
+under **Settings → People**. A new person's first password is generated and shown once;
+somebody who already has an account on another board simply joins with the password they
+already use, and nothing needs sending.
 
 Rotate a passphrase: `PATCH /api/admin/tenants/<slug>` with `{"rotate": true}`.
 

@@ -10,7 +10,7 @@ export const POST = withTenant(async (req, { params }, t, c) => {
   if (!b.body) return json({ error: 'body required' }, 400);
   // A signed-in person is attributed from their session, not from what the client claims.
   // Agents on a bearer token still pass an author, as they always have.
-  const author = c.user ? c.user.display_name : (b.author || 'Anon');
+  const author = c.person ? c.person.display_name : (b.author || 'Anon');
   const [nt] = await sql`insert into notes (card_id, author, body) values (${cardId}, ${author}, ${b.body}) returning *`;
   await sql`update cards set updated_at=now() where id=${cardId}`;
   return json(nt, 201);

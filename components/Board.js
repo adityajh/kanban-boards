@@ -18,6 +18,7 @@ const withCurrent = (list, cur) => (cur && !list.includes(cur) ? [...list, cur] 
 
 export default function Board({ slug }) {
   const [me, setMe] = useState(undefined); // undefined = still checking, null = signed out
+  const [boards, setBoards] = useState([]);
   const [tenant, setTenant] = useState(null);
   const [cards, setCards] = useState([]);
   const [openId, setOpenId] = useState(null);
@@ -35,36 +36,43 @@ export default function Board({ slug }) {
     if (card) setOpenId(card);
   }, [slug]);
 
-  // The session cookie is same-origin and HttpOnly, so there is no token to attach here.
+  // The session cookie is same-origin and HttpOnly, so there is no token to attach. It
+  // names a person, not a board, so every call says which board it means — and the server
+  // checks membership of it rather than taking the header's word for anything.
   const api = useCallback(async (path, method = 'GET', body) => {
     const r = await fetch('/api' + path, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Tenant': slug },
       body: body ? JSON.stringify(body) : undefined,
     });
     if (r.status === 401) { setMe(null); setTenant(null); throw new Error('Your session expired'); }
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Error');
     return r.json();
-  }, []);
+  }, [slug]);
 
-  // A session belongs to one board: signed in on /jbj is not signed in on /inditress.
+  // One sign-in covers every board you belong to; `boards` is both the switcher's contents
+  // and the check that this URL is one you may open.
   useEffect(() => {
     let live = true;
     fetch('/api/auth/me')
       .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (live) setMe(d && d.slug === slug ? d.user : null); })
+      .then(d => {
+        if (!live) return;
+        setMe(d ? d.user : null);
+        setBoards(d ? d.boards : []);
+      })
       .catch(() => { if (live) setMe(null); });
     return () => { live = false; };
   }, [slug]);
 
   useEffect(() => {
-    if (!me || me.mustChange) return;
+    if (!me || me.mustChange || !boards.some(b => b.slug === slug)) return;
     let live = true;
     api('/tenant')
       .then(tn => { if (live) { setTenant(tn); setErr(''); } })
       .catch(e => { if (live) setErr(e.message); });
     return () => { live = false; };
-  }, [me, api]);
+  }, [me, api, boards, slug]);
 
   const cfg = tenant?.config || {};
   const names = cfg.names || [];
@@ -98,12 +106,19 @@ export default function Board({ slug }) {
   useEffect(() => { if (tenant) load(); }, [tenant, load]);
 
   const dots = cfg.dots > 0 ? Array.from({ length: cfg.dots }, (_, i) => <i key={i} />) : null;
+  const onThisBoard = boards.some(b => b.slug === slug);
+  const isAdminHere = boards.some(b => b.slug === slug && b.is_admin);
+  const signOut = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    setMe(null); setBoards([]); setTenant(null); setCards([]); setResources([]);
+  };
 
   // ---- gates ----
   // Nothing about the board — not even its name or accent — is shown before sign-in.
   if (me === undefined) return <div className="gate"><p>Loading…</p></div>;
-  if (!me) return <Login slug={slug} onIn={setMe} />;
+  if (!me) return <Login slug={slug} onIn={(user, bs) => { setMe(user); setBoards(bs); }} />;
   if (me.mustChange) return <FirstPassword onDone={setMe} />;
+  if (!onThisBoard) return <NotYourBoard boards={boards} onSignOut={signOut} />;
   if (!tenant) return <div className="gate"><p>{err || 'Loading…'}</p></div>;
 
   // ---- card ops ----
@@ -147,10 +162,6 @@ export default function Board({ slug }) {
   };
 
   const reload = load;
-  const signOut = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
-    setMe(null); setTenant(null); setCards([]); setResources([]);
-  };
 
   return (
     <>
@@ -158,7 +169,8 @@ export default function Board({ slug }) {
         <div className="brand">{cfg.brand || tenant.name}{cfg.tagline && <small>{cfg.tagline}</small>}</div>
         <div className="spacer" />
         {dots && <div className="dots" title={cfg.dotsTitle || ''}>{dots}</div>}
-        <div className="whoami">You are <b>{user}</b>{me.isAdmin && <span className="badge">admin</span>}</div>
+        {boards.length > 1 && <BoardSwitcher boards={boards} slug={slug} />}
+        <div className="whoami">You are <b>{user}</b>{isAdminHere && <span className="badge">admin</span>}</div>
         <a className="linkbtn" href={'/' + slug + '/settings'}>settings</a>
         <button className="linkbtn" onClick={signOut}>sign out</button>
       </div>
@@ -224,6 +236,35 @@ export default function Board({ slug }) {
   );
 }
 
+// One account, several boards: a person who lands on a board they are not on gets told
+// plainly rather than shown a sign-in form they would only fail.
+function NotYourBoard({ boards, onSignOut }) {
+  return (
+    <div className="gate">
+      <h1>Not your board</h1>
+      <p>You are signed in, but this board is not one of yours.</p>
+      {boards.length > 0 && (
+        <>
+          <p style={{ margin: '0 0 12px' }}>Your boards:</p>
+          <div className="names">
+            {boards.map(b => <a key={b.slug} href={'/' + b.slug}>{b.name}</a>)}
+          </div>
+        </>
+      )}
+      <button className="linkbtn" style={{ marginTop: 18 }} onClick={onSignOut}>sign out</button>
+    </div>
+  );
+}
+
+function BoardSwitcher({ boards, slug }) {
+  return (
+    <select className="switcher" value={slug}
+      onChange={e => { window.location.href = '/' + e.target.value; }}>
+      {boards.map(b => <option key={b.slug} value={b.slug}>{b.name}</option>)}
+    </select>
+  );
+}
+
 function Login({ slug, onIn }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -238,11 +279,11 @@ function Login({ slug, onIn }) {
       const r = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug, username: username.trim(), password }),
+        body: JSON.stringify({ username: username.trim(), password }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setErr(d.error || 'Sign in failed'); setPassword(''); return; }
-      onIn(d.user);
+      onIn(d.user, d.boards || []);
     } catch {
       setErr('Could not reach the server');
     } finally {
@@ -254,7 +295,7 @@ function Login({ slug, onIn }) {
     <form className="gate" onSubmit={submit}>
       <h1>{slug}</h1>
       <div className="sub">Project Board</div>
-      <p>Sign in with your own username and password.</p>
+      <p>Sign in with your username and password.</p>
       {err && <div className="err">{err}</div>}
       <input autoFocus value={username} placeholder="Username" autoComplete="username"
         onChange={e => setUsername(e.target.value)} />

@@ -1,28 +1,26 @@
 import { sql } from '../../../lib/db';
 import { json, options } from '../../../lib/http';
 import { withUser, isBoardAdmin, normalizeConfig, publicTenant } from '../../../lib/tenant';
-import { publicUser } from '../../../lib/auth';
+import { publicPerson } from '../../../lib/auth';
+import { boardPeople, withRole } from '../../../lib/people';
 export const dynamic = 'force-dynamic';
 export async function OPTIONS() { return options(); }
 
-// Everything the settings screen needs in one call: the board, who you are, and whether
-// you may edit the board at all.
+// Everything the settings screen needs in one call: the board, who you are here, and
+// whether you may edit it.
 export const GET = withUser(async (req, ctx, t, c) => {
   const admin = isBoardAdmin(c);
-  const users = admin
-    ? await sql`select * from users where tenant_id=${t.id} order by lower(display_name)`
-    : [];
   return json({
     tenant: publicTenant(t),
-    me: c.user ? publicUser(c.user) : null,
+    me: c.person ? { ...publicPerson(c.person), isAdmin: c.memberAdmin } : null,
     isAdmin: admin,
-    users: users.map(publicUser),
+    users: admin ? (await boardPeople(t.id)).map(withRole) : [],
   });
 });
 
 // Board settings. Merged into the existing config and re-normalized, so a partial patch
 // can't drop keys and an invalid accent or dot count is simply ignored.
-export const PATCH = withUser(async (req, ctx, t, c) => {
+export const PATCH = withUser(async (req, ctx, t) => {
   const b = await req.json().catch(() => ({}));
   const name = String(b.name || '').trim() || t.name;
   const config = normalizeConfig({ ...t.config, ...(b.config || {}) }, name);

@@ -139,13 +139,18 @@ export default function Admin() {
                 Created <a href={'/' + created.tenant.slug}>/{created.tenant.slug}</a>.
                 Both secrets below are shown once — copy them now.
                 <div>Passphrase (for agents): <code>{created.passphrase}</code></div>
-                {created.admin && (
+                {created.admin && (created.admin.password ? (
                   <div>
                     Admin sign-in for <b>{created.admin.displayName}</b>:{' '}
                     <code>{created.admin.username}</code> / <code>{created.admin.password}</code>
                     {' '}— they will be asked to change it on first sign-in.
                   </div>
-                )}
+                ) : (
+                  <div>
+                    Admin is <b>{created.admin.displayName}</b> (<code>{created.admin.username}</code>),
+                    who already had an account — they sign in with the password they already use.
+                  </div>
+                ))}
               </div>
             )}
           </section>

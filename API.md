@@ -18,9 +18,12 @@ The passphrase alone decides which board you're on; there is no board name in th
 A wrong or missing token gets `401`. Rows that belong to another board get `404`.
 
 **Session cookie — for people in a browser.** `POST /auth/login` sets an HttpOnly
-`board_session` cookie scoped to the board you signed in to. The cookie is `SameSite=Lax`
-and CORS sends no `Allow-Credentials`, so it only works same-origin — a script calling the
-API from elsewhere must use a bearer token.
+`board_session` cookie that names **a person, not a board** — one sign-in covers every board
+you belong to. Each request says which board it means via `X-Tenant: <slug>`, and the server
+checks your membership of that board rather than taking the header's word for it. A board
+you are not on is refused with `401`, exactly as a board that does not exist is. The cookie
+is `SameSite=Lax` and CORS sends no `Allow-Credentials`, so it only works same-origin — a
+script calling the API from elsewhere must use a bearer token.
 
 A passphrase is a shared secret held by agents, so it is **not** a person: it gets `403`
 on `/settings/*` and `/auth/password`. Conversely a session cannot reach `/admin/*`.
@@ -74,12 +77,13 @@ Cookie-based, same-origin. Not for agents.
 
 | Method | Path | Body | Does |
 |--------|------|------|------|
-| POST | `/auth/login` | `{slug, username, password}` | Sets the session cookie. Returns `{user}`. Every failure is the same `401` — it never says which part was wrong |
+| POST | `/auth/login` | `{username, password}` | Sets the session cookie. Returns `{user, boards}`. No board is named: one account opens every board you are on. Every failure is the same `401` — it never says which part was wrong |
 | POST | `/auth/logout` | — | Drops the session and clears the cookie |
-| GET | `/auth/me` | — | `{user, slug}` for the current session, else `401` |
-| POST | `/auth/password` | `{currentPassword, newPassword}` | Change your own password (min 10 chars). Clears `mustChange`, and signs out every other session you have |
+| GET | `/auth/me` | — | `{user, boards}` for the current session, else `401`. `boards` is `[{slug, name, is_admin}]` — what the switcher shows, and the check that a URL is yours to open |
+| POST | `/auth/password` | `{currentPassword, newPassword}` | Change your own password (min 10 chars). One password covers every board, so this changes it everywhere and signs out every other session you have |
 
-`user` is `{id, username, displayName, isAdmin, mustChange}`. `mustChange` is true until
+`user` is `{id, username, displayName, mustChange}` — no `isAdmin`, because admin belongs to
+a board, not to a person. `mustChange` is true until
 someone replaces the password they were issued; the board UI holds them at a
 change-password screen until they do.
 
@@ -93,12 +97,13 @@ Board settings and people. A session cookie, or `ADMIN_KEY` + `X-Tenant`. Rows m
 | GET | `/settings` | — | `{tenant, me, isAdmin, users}`. Non-admins get an empty `users` |
 | PATCH | `/settings` | `{name?, config?}` | **admin** — board name, brand, tagline, accent, people, tags, dots |
 | GET | `/settings/users` | — | **admin** — everyone who can sign in to this board |
-| POST | `/settings/users` | `{username, displayName?, isAdmin?}` | **admin** — add a person. Returns `{user, password}`; that generated password is shown **only here**. Also adds the display name to the board's people list |
-| PATCH | `/settings/users/:id` | `{displayName?, isAdmin?, resetPassword?}` | **admin** — rename, change role, or reset the password (returns a new one-time `password` and signs that person out everywhere) |
-| DELETE | `/settings/users/:id` | — | **admin** — remove a person. Their name stays on work already assigned to them |
+| POST | `/settings/users` | `{username, displayName?, isAdmin?}` | **admin** — add a person to this board. Returns `{user, password, existing}`. Someone who already has an account (they are on another board) joins with the password they already use and `password` is `null`; only a new person gets one issued, shown **only here**. Also adds the display name to the board's people list |
+| PATCH | `/settings/users/:id` | `{displayName?, isAdmin?, resetPassword?}` | **admin** — `isAdmin` changes their role **on this board only**; `displayName` and `resetPassword` belong to the person, so they apply on every board they are on. A reset returns a new one-time `password` and signs them out everywhere |
+| DELETE | `/settings/users/:id` | — | **admin** — take them off **this** board; other boards and their account are untouched. Removing their last board removes the account too (`{ok, accountRemoved}`), since an account on no boards can never be reached or removed again. Their name stays on work already assigned to them |
 
-The last admin on a board cannot be demoted or deleted (`409`), and you cannot delete
-yourself. Usernames are 2–32 chars of `a-z 0-9 . _ -`, case-insensitive within a board.
+The last admin on a board cannot be demoted or removed (`409`), and you cannot remove
+yourself. Usernames are 2–32 chars of `a-z 0-9 . _ -`, case-insensitive and **global** —
+one username is one person across every board.
 
 ## Admin endpoints (ADMIN_KEY only)
 
@@ -106,7 +111,7 @@ yourself. Usernames are 2–32 chars of `a-z 0-9 . _ -`, case-insensitive within
 |--------|------|------|------|
 | GET | `/admin/overview` | — | Per-board column counts, Review queue, stalled cards (in progress, 14+ days untouched), recent notes |
 | GET | `/admin/tenants` | — | List boards (never returns passphrases) |
-| POST | `/admin/tenants` | `{slug, name, passphrase?, adminUsername?, config: {names, tags?, brand?, tagline?, accent?}}` | Create a board **and its first admin** (`adminUsername` defaults to the first person listed). Returns `{tenant, passphrase, admin:{username, displayName, password}}` — both secrets are shown only here |
+| POST | `/admin/tenants` | `{slug, name, passphrase?, adminUsername?, config: {names, tags?, brand?, tagline?, accent?}}` | Create a board **and its first admin** (`adminUsername` defaults to the first person listed). Returns `{tenant, passphrase, admin:{username, displayName, password, existing}}`. If that admin already has an account they join with their existing password and `password` is `null` |
 | PATCH | `/admin/tenants/:slug` | `{name?, config?, rotate?, passphrase?}` | Rename, change settings (merged), or rotate the passphrase |
 
 `names` and `tags` accept an array or a comma-separated string. `accent` is `#rrggbb`.

@@ -80,101 +80,126 @@ check "/inditress 200" 200 "$(code $B/inditress)"
 check "/jbj 200" 200 "$(code $B/jbj)"
 check "/admin 200" 200 "$(code $B/admin)"
 
-echo "== per-user auth"
+echo "== per-person auth"
 JAR=$(mktemp); JAR2=$(mktemp)
-login() { # slug user pass jar -> http code
-  curl -s -o /dev/null -w '%{http_code}' -c "$4" -X POST -H "$CT" \
-    -d "{\"slug\":\"$1\",\"username\":\"$2\",\"password\":\"$3\"}" $B/api/auth/login; }
+# Signing in no longer names a board: one account, many boards.
+login() { # username password jar -> http code
+  curl -s -o /dev/null -w '%{http_code}' -c "$3" -X POST -H "$CT" \
+    -d "{\"username\":\"$1\",\"password\":\"$2\"}" $B/api/auth/login; }
 
-# Adding a user also adds their display name to the board's people list, so remember what
-# it was and put it back in cleanup — otherwise a second run sees a changed board.
-names_of() { curl -s -H "$JBJ" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"]["names"]))'; }
-JBJ_NAMES=$(names_of)
+# Adding someone appends their display name to that board's people list, so remember both
+# boards' lists and put them back in cleanup.
+names_of() { curl -s -H "$1" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"]["names"]))'; }
+JBJ_NAMES=$(names_of "$JBJ")
+IND_NAMES=$(names_of "$IND")
 
-# A throwaway member on jbj, created with ADMIN_KEY the way the settings UI does.
 JT="X-Tenant: jbj"
+IT="X-Tenant: inditress"
 MEMBER=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users \
   -d '{"username":"zz-test-member","displayName":"ZZ Test Member"}')
 MEMBER_PW=$(echo "$MEMBER" | jget 'd.get("password","")')
 MEMBER_ID=$(echo "$MEMBER" | jget 'd.get("user",{}).get("id","")')
-check "admin key creates a member" True "$([ -n "$MEMBER_PW" ] && echo True || echo False)"
-check "password is not echoed by the user list" False \
+check "admin key adds a person to a board" True "$([ -n "$MEMBER_PW" ] && echo True || echo False)"
+check "a brand new person gets a password" False "$(echo "$MEMBER" | jget 'd["existing"]')"
+check "password is not echoed by the people list" False \
   "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/users | jget '"password" in str(d)')"
 
-echo "-- login"
-check "correct password -> 200" 200 "$(login jbj zz-test-member "$MEMBER_PW" $JAR)"
-check "wrong password -> 401" 401 "$(login jbj zz-test-member wrong-password-here $JAR2)"
-check "unknown user -> 401" 401 "$(login jbj zz-no-such-user "$MEMBER_PW" $JAR2)"
-check "right password, wrong board -> 401" 401 "$(login inditress zz-test-member "$MEMBER_PW" $JAR2)"
-# The failure body must not say which part was wrong.
-E1=$(curl -s -X POST -H "$CT" -d '{"slug":"jbj","username":"zz-test-member","password":"nope"}' $B/api/auth/login)
-E2=$(curl -s -X POST -H "$CT" -d '{"slug":"jbj","username":"zz-nobody","password":"nope"}' $B/api/auth/login)
+echo "-- signing in"
+check "correct password -> 200" 200 "$(login zz-test-member "$MEMBER_PW" $JAR)"
+check "wrong password -> 401" 401 "$(login zz-test-member wrong-password-here $JAR2)"
+check "unknown user -> 401" 401 "$(login zz-no-such-user "$MEMBER_PW" $JAR2)"
+E1=$(curl -s -X POST -H "$CT" -d '{"username":"zz-test-member","password":"nope"}' $B/api/auth/login)
+E2=$(curl -s -X POST -H "$CT" -d '{"username":"zz-nobody","password":"nope"}' $B/api/auth/login)
 check "wrong password and unknown user are indistinguishable" "$E1" "$E2"
-
-echo "-- session identifies the person and the board"
-check "/api/auth/me names the board" jbj "$(curl -s -b $JAR $B/api/auth/me | jget 'd["slug"]')"
-check "/api/auth/me is not an admin" False "$(curl -s -b $JAR $B/api/auth/me | jget 'd["user"]["isAdmin"]')"
-check "must change a generated password" True "$(curl -s -b $JAR $B/api/auth/me | jget 'd["user"]["mustChange"]')"
-check "cookie reads its own board" jbj "$(curl -s -b $JAR $B/api/tenant | jget 'd["slug"]')"
 check "no cookie -> 401 on /me" 401 "$(code $B/api/auth/me)"
+check "/me lists the boards you are on" "['jbj']" "$(curl -s -b $JAR $B/api/auth/me | jget "[x['slug'] for x in d['boards']]")"
+check "must change a generated password" True "$(curl -s -b $JAR $B/api/auth/me | jget 'd["user"]["mustChange"]')"
 
-echo "-- a session is scoped to one board, like a passphrase"
-check "jbj session cannot read an inditress card" 404 "$(code -b $JAR $B/api/cards/$IND_CARD)"
-check "jbj session cannot patch an inditress card" 404 "$(code -X PATCH -b $JAR -H "$CT" $B/api/cards/$IND_CARD -d '{"title":"pwned"}')"
-check "jbj session cannot delete an inditress subtask" 404 "$(code -X DELETE -b $JAR $B/api/subtasks/$IND_SUB)"
-check "jbj session ignores X-Tenant: inditress" jbj "$(curl -s -b $JAR -H 'X-Tenant: inditress' $B/api/tenant | jget 'd["slug"]')"
+echo "-- a session opens only the boards you belong to"
+check "own board reads" jbj "$(curl -s -b $JAR -H "$JT" $B/api/tenant | jget 'd["slug"]')"
+check "a board you are not on -> 401" 401 "$(code -b $JAR -H "$IT" $B/api/tenant)"
+check "a board that does not exist -> 401" 401 "$(code -b $JAR -H 'X-Tenant: zz-no-such-board' $B/api/tenant)"
+check "no board named at all -> 400" 400 "$(code -b $JAR $B/api/tenant)"
+check "cannot read another board's cards" 401 "$(code -b $JAR -H "$IT" $B/api/cards)"
+check "cannot reach another board's row by id" 404 "$(code -b $JAR -H "$JT" $B/api/cards/$IND_CARD)"
+check "cannot patch another board's row by id" 404 "$(code -X PATCH -b $JAR -H "$JT" -H "$CT" $B/api/cards/$IND_CARD -d '{"title":"pwned"}')"
+check "cannot delete another board's subtask by id" 404 "$(code -X DELETE -b $JAR -H "$JT" $B/api/subtasks/$IND_SUB)"
 
 echo "-- members are not admins"
-check "member sees settings" 200 "$(code -b $JAR $B/api/settings)"
-check "member is told they are not admin" False "$(curl -s -b $JAR $B/api/settings | jget 'd["isAdmin"]')"
-check "member sees no user list" 0 "$(curl -s -b $JAR $B/api/settings | jget 'len(d["users"])')"
-check "member cannot edit the board" 403 "$(code -X PATCH -b $JAR -H "$CT" $B/api/settings -d '{"name":"pwned"}')"
-check "member cannot list users" 403 "$(code -b $JAR $B/api/settings/users)"
-check "member cannot add a user" 403 "$(code -X POST -b $JAR -H "$CT" $B/api/settings/users -d '{"username":"zz-sneak"}')"
-check "member cannot promote themselves" 403 "$(code -X PATCH -b $JAR -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":true}')"
-check "member cannot delete a user" 403 "$(code -X DELETE -b $JAR $B/api/settings/users/$MEMBER_ID)"
+check "member sees settings" 200 "$(code -b $JAR -H "$JT" $B/api/settings)"
+check "member is told they are not admin" False "$(curl -s -b $JAR -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
+check "member sees no people list" 0 "$(curl -s -b $JAR -H "$JT" $B/api/settings | jget 'len(d["users"])')"
+check "member cannot edit the board" 403 "$(code -X PATCH -b $JAR -H "$JT" -H "$CT" $B/api/settings -d '{"name":"pwned"}')"
+check "member cannot list people" 403 "$(code -b $JAR -H "$JT" $B/api/settings/users)"
+check "member cannot add a person" 403 "$(code -X POST -b $JAR -H "$JT" -H "$CT" $B/api/settings/users -d '{"username":"zz-sneak"}')"
+check "member cannot promote themselves" 403 "$(code -X PATCH -b $JAR -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":true}')"
+check "member cannot remove anyone" 403 "$(code -X DELETE -b $JAR -H "$JT" $B/api/settings/users/$MEMBER_ID)"
 
 echo "-- an agent's passphrase is not a person"
 check "passphrase cannot read settings" 403 "$(code -H "$JBJ" $B/api/settings)"
-check "passphrase cannot list users" 403 "$(code -H "$JBJ" $B/api/settings/users)"
-check "passphrase cannot add a user" 403 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/settings/users -d '{"username":"zz-agent"}')"
+check "passphrase cannot list people" 403 "$(code -H "$JBJ" $B/api/settings/users)"
+check "passphrase cannot add a person" 403 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/settings/users -d '{"username":"zz-agent"}')"
 check "passphrase cannot change a password" 401 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/auth/password -d '{"currentPassword":"x","newPassword":"yyyyyyyyyy"}')"
 check "passphrase still works on /api/cards" 200 "$(code -H "$JBJ" $B/api/cards)"
 
 echo "-- notes are attributed from the session, not the request body"
 JN_CARD=$(curl -s -X POST -H "$JBJ" -H "$CT" $B/api/cards -d '{"title":"Auth test card"}' | jget 'd["id"]')
 check "claimed author is ignored for a signed-in person" "ZZ Test Member" \
-  "$(curl -s -X POST -b $JAR -H "$CT" $B/api/cards/$JN_CARD/notes -d '{"body":"hi","author":"Adi"}' | jget 'd["author"]')"
+  "$(curl -s -X POST -b $JAR -H "$JT" -H "$CT" $B/api/cards/$JN_CARD/notes -d '{"body":"hi","author":"Adi"}' | jget 'd["author"]')"
 check "an agent still sets its own author" "Rahul" \
   "$(curl -s -X POST -H "$JBJ" -H "$CT" $B/api/cards/$JN_CARD/notes -d '{"body":"hi","author":"Rahul"}' | jget 'd["author"]')"
 
+echo "-- one account across two boards"
+JOIN=$(curl -s -X POST -H "$ADM" -H "$IT" -H "$CT" $B/api/settings/users \
+  -d '{"username":"zz-test-member","displayName":"ZZ Test Member"}')
+check "joining a second board recognises the existing account" True "$(echo "$JOIN" | jget 'd["existing"]')"
+check "and issues no second password" True "$(echo "$JOIN" | jget 'd["password"] is None')"
+check "the same id is reused" "$MEMBER_ID" "$(echo "$JOIN" | jget 'd["user"]["id"]')"
+check "already on the board -> 409" 409 "$(code -X POST -H "$ADM" -H "$IT" -H "$CT" $B/api/settings/users -d '{"username":"zz-test-member"}')"
+check "/me now lists both boards" "['inditress', 'jbj']" "$(curl -s -b $JAR $B/api/auth/me | jget "sorted(x['slug'] for x in d['boards'])")"
+check "the one session opens the second board" inditress "$(curl -s -b $JAR -H "$IT" $B/api/tenant | jget 'd["slug"]')"
+check "no new sign-in was needed" 200 "$(code -b $JAR -H "$IT" $B/api/cards)"
+
+echo "-- admin is per board, not per person"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$IT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":true}'
+check "admin on the board it was granted on" True "$(curl -s -b $JAR -H "$IT" $B/api/settings | jget 'd["isAdmin"]')"
+check "still not admin on the other board" False "$(curl -s -b $JAR -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
+check "and still cannot edit the other board" 403 "$(code -X PATCH -b $JAR -H "$JT" -H "$CT" $B/api/settings -d '{"name":"pwned"}')"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$IT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":false}'
+
 echo "-- changing a password"
-check "wrong current password -> 403" 403 "$(code -X POST -b $JAR -H "$CT" $B/api/auth/password -d '{"currentPassword":"nope","newPassword":"brand-new-password"}')"
 # bash 3.2 (macOS) mangles an escaped-quote body written inline inside "$( … )", sending
 # an empty one. An empty body reads as a missing newPassword, which is "too short" — so the
 # two negative checks below would pass for the wrong reason and only the positive one would
-# show it. Build each body in a variable first. (Same trap as the tenant-create body above.)
+# show it. Build each body in a variable first.
 PW_SHORT="{\"currentPassword\":\"$MEMBER_PW\",\"newPassword\":\"short\"}"
 PW_SAME="{\"currentPassword\":\"$MEMBER_PW\",\"newPassword\":\"$MEMBER_PW\"}"
 PW_NEW="{\"currentPassword\":\"$MEMBER_PW\",\"newPassword\":\"brand-new-password\"}"
-# Guard the guard: if the body ever arrives empty again, this fails loudly instead of
-# quietly turning the checks below into tautologies.
 check "the change-password body survives the shell" True "$(python3 -c 'import json,sys; print(bool(json.loads(sys.argv[1]).get("newPassword")))' "$PW_NEW")"
+check "wrong current password -> 403" 403 "$(code -X POST -b $JAR -H "$CT" $B/api/auth/password -d '{"currentPassword":"nope","newPassword":"brand-new-password"}')"
 check "too short -> 400" 400 "$(code -X POST -b $JAR -H "$CT" $B/api/auth/password -d "$PW_SHORT")"
 check "same as current -> 400" 400 "$(code -X POST -b $JAR -H "$CT" $B/api/auth/password -d "$PW_SAME")"
-# A second browser for the same person, to prove a change evicts it.
-check "second session logs in" 200 "$(login jbj zz-test-member "$MEMBER_PW" $JAR2)"
+check "second session logs in" 200 "$(login zz-test-member "$MEMBER_PW" $JAR2)"
 check "change succeeds" 200 "$(code -X POST -b $JAR -c $JAR -H "$CT" $B/api/auth/password -d "$PW_NEW")"
 check "mustChange is cleared" False "$(curl -s -b $JAR $B/api/auth/me | jget 'd["user"]["mustChange"]')"
 check "the other session is evicted" 401 "$(code -b $JAR2 $B/api/auth/me)"
-check "old password no longer works" 401 "$(login jbj zz-test-member "$MEMBER_PW" $JAR2)"
-check "new password works" 200 "$(login jbj zz-test-member brand-new-password $JAR2)"
+check "old password no longer works" 401 "$(login zz-test-member "$MEMBER_PW" $JAR2)"
+check "new password works" 200 "$(login zz-test-member brand-new-password $JAR2)"
+check "the new password opens both boards" 200 "$(code -b $JAR2 -H "$IT" $B/api/cards)"
 
-echo "-- admin reset evicts the person being reset"
+echo "-- admin reset evicts the person everywhere"
 RESET=$(curl -s -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"resetPassword":true}')
 check "reset returns a new password" True "$([ -n "$(echo "$RESET" | jget 'd.get("password","")')" ] && echo True || echo False)"
 check "reset signs the person out" 401 "$(code -b $JAR $B/api/auth/me)"
-check "reset password works" 200 "$(login jbj zz-test-member "$(echo "$RESET" | jget 'd["password"]')" $JAR)"
+check "reset signs out their other session too" 401 "$(code -b $JAR2 $B/api/auth/me)"
+check "reset password works" 200 "$(login zz-test-member "$(echo "$RESET" | jget 'd["password"]')" $JAR)"
+
+echo "-- leaving one board does not touch the other"
+check "removed from inditress" 200 "$(code -X DELETE -H "$ADM" -H "$IT" $B/api/settings/users/$MEMBER_ID)"
+check "inditress is now closed to them" 401 "$(code -b $JAR -H "$IT" $B/api/tenant)"
+check "jbj still opens" jbj "$(curl -s -b $JAR -H "$JT" $B/api/tenant | jget 'd["slug"]')"
+check "the account still exists" 200 "$(code -b $JAR $B/api/auth/me)"
+check "and lists only the remaining board" "['jbj']" "$(curl -s -b $JAR $B/api/auth/me | jget "[x['slug'] for x in d['boards']]")"
 
 echo "-- signing out"
 check "logout clears the session" 200 "$(code -X POST -b $JAR -c $JAR $B/api/auth/logout)"
@@ -187,24 +212,29 @@ if [ "$ADMIN_COUNT" = "1" ]; then
   # Demotion, not deletion: a refused demotion changes nothing, and a wrongly-allowed one
   # is put back below.
   check "the only admin cannot be demoted" 409 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$SOLE_ADMIN -d '{"isAdmin":false}')"
-  check "the only admin cannot be deleted" 409 "$(code -X DELETE -H "$ADM" -H "$JT" $B/api/settings/users/$SOLE_ADMIN)"
+  check "the only admin cannot be removed" 409 "$(code -X DELETE -H "$ADM" -H "$JT" $B/api/settings/users/$SOLE_ADMIN)"
   check "the only admin is still an admin" True "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/users | jget "[u['isAdmin'] for u in d if u['id']==$SOLE_ADMIN][0]")"
   curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$SOLE_ADMIN -d '{"isAdmin":true}'
 else
   echo "  skip jbj has $ADMIN_COUNT admins, last-admin guard not exercised"
 fi
 
-echo "-- new boards come with an admin"
-check "duplicate username on one board -> 409" 409 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users -d '{"username":"zz-test-member"}')"
+echo "-- usernames"
 check "bad username -> 400" 400 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users -d '{"username":"no spaces"}')"
-check "admin key cannot reach another board's user" 404 "$(code -H "$ADM" -H 'X-Tenant: inditress' -X DELETE $B/api/settings/users/$MEMBER_ID)"
+check "admin key cannot reach a person who is not on the named board" 404 "$(code -H "$ADM" -H "$IT" -X DELETE $B/api/settings/users/$MEMBER_ID)"
 
 echo "== cleanup"
 curl -s -o /dev/null -X DELETE -H "$JBJ" $B/api/cards/$JN_CARD
-check "jbj removes the test member" 200 "$(code -X DELETE -H "$ADM" -H "$JT" $B/api/settings/users/$MEMBER_ID)"
-check "the removed member cannot sign in" 401 "$(login jbj zz-test-member brand-new-password $JAR2)"
-curl -s -o /dev/null -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/jbj -d "{\"config\":{\"names\":$JBJ_NAMES}}"
-check "jbj people list restored" "$JBJ_NAMES" "$(names_of)"
+LAST=$(curl -s -X DELETE -H "$ADM" -H "$JT" $B/api/settings/users/$MEMBER_ID)
+check "jbj removes the test member" True "$(echo "$LAST" | jget 'd.get("ok") is True')"
+check "their last board going takes the account with it" True "$(echo "$LAST" | jget 'd["accountRemoved"]')"
+check "the removed person cannot sign in" 401 "$(login zz-test-member brand-new-password $JAR2)"
+RESTORE_JBJ="{\"config\":{\"names\":$JBJ_NAMES}}"
+RESTORE_IND="{\"config\":{\"names\":$IND_NAMES}}"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/jbj -d "$RESTORE_JBJ"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/inditress -d "$RESTORE_IND"
+check "jbj people list restored" "$JBJ_NAMES" "$(names_of "$JBJ")"
+check "inditress people list restored" "$IND_NAMES" "$(names_of "$IND")"
 rm -f $JAR $JAR2
 
 check "jbj deletes its test card" 200 "$(code -X DELETE -H "$JBJ" $B/api/cards/$J_CARD)"

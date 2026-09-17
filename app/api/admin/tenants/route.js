@@ -43,14 +43,28 @@ export const POST = withAdmin(async (req) => {
     const [tenant] = await sql`insert into tenants (slug, name, key_hash, config)
       values (${slug}, ${name}, ${hashKey(passphrase)}, ${JSON.stringify(config)}::jsonb)
       returning id, slug, name, config, created_at`;
-    await sql`insert into users (tenant_id, username, display_name, password_hash, is_admin, must_change)
-      values (${tenant.id}, ${adminUsername}, ${adminDisplay}, ${await hashPassword(adminPassword)}, true, true)`;
+
+    // If that admin already has an account, they join this board with the password they
+    // already use; only a genuinely new person gets one issued.
+    const [existing] = await sql`select * from people where lower(username)=lower(${adminUsername})`;
+    let admin = existing, issued = null;
+    if (!admin) {
+      issued = adminPassword;
+      [admin] = await sql`insert into people (username, display_name, password_hash, must_change)
+        values (${adminUsername}, ${adminDisplay}, ${await hashPassword(issued)}, true) returning *`;
+    }
+    await sql`insert into memberships (person_id, tenant_id, is_admin)
+      values (${admin.id}, ${tenant.id}, true)`;
+
     const { id, ...publicRow } = tenant;
-    // Passphrase and admin password are both shown exactly once.
+    // Passphrase and, for a new person, their password are both shown exactly once.
     return json({
       tenant: publicRow,
       passphrase,
-      admin: { username: adminUsername, displayName: adminDisplay, password: adminPassword },
+      admin: {
+        username: admin.username, displayName: admin.display_name,
+        password: issued, existing: !!existing,
+      },
     }, 201);
   } catch (e) {
     if (e.code === '23505') return json({ error: 'that slug (or passphrase) is already taken' }, 409);
