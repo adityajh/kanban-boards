@@ -24,6 +24,27 @@ check() { # name expected actual
 }
 jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
 
+# Before asserting anything, prove we are talking to the app at all. A protected Vercel
+# preview answers every request with a 401 SSO page, which silently turns each "-> 401"
+# check into a tautology and leaves the rest failing for reasons that look like code faults.
+# 15 of 116 passing is what that looks like; better to stop here and say why.
+PRE=$(curl -s -o /dev/null -w '%{http_code}' $B/api/auth/me)
+PRE_BODY=$(curl -s $B/api/auth/me)
+if [ "$PRE" != "401" ] || ! echo "$PRE_BODY" | grep -q '"error"'; then
+  echo "Cannot reach the app at $B"
+  echo "  GET /api/auth/me returned $PRE and did not look like our JSON:"
+  echo "  ${PRE_BODY:0:200}"
+  echo
+  if echo "$PRE_BODY" | grep -qi 'vercel\|authenticat\|<html'; then
+    echo "  That looks like Vercel Deployment Protection, not the app."
+    echo "  Set VERCEL_BYPASS to the project's Protection Bypass for Automation secret"
+    echo "  (Vercel -> Settings -> Deployment Protection), then re-run."
+  else
+    echo "  Check the URL, and that the deployment finished building."
+  fi
+  exit 1
+fi
+
 echo "== auth"
 check "no key -> 401" 401 "$(code $B/api/cards)"
 check "wrong key -> 401" 401 "$(code -H 'Authorization: Bearer nope-nope-nope' $B/api/cards)"
