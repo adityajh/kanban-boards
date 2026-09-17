@@ -121,8 +121,11 @@ exactly once; store it in the Credentials env file. Rotate with
   bespoke CSS per client or you're back to separate apps.
 - "Who are you?" is still an honour-system name picker, not a login. Real per-person auth
   was deliberately deferred.
-- The Inditress passphrase was deliberately **not** rotated, even though it sat in plain text
-  on the hub page for months. Worth raising with Adi again.
+- The board passphrases were deliberately **not** rotated, the Inditress one included, even
+  though it sat in plain text on the hub page for months. Raised again on 2026-09-17 with
+  the old-deployment finding above as a fresh reason; Adi's answer was still no. Don't
+  rotate without asking — it breaks every agent integration, and per that finding it would
+  not close the bypass anyway.
 
 ## Rollback
 
@@ -242,6 +245,14 @@ request never arrived. Only the positive check next to it exposed the problem.
 - A forgotten password is not recoverable by anyone, including whoever issued it. A board
   admin resets it in Settings → People, which prints a new one-time password and signs that
   person out everywhere.
-- The Inditress passphrase still has not been rotated. Now that humans no longer type it,
-  rotating it only affects agents — the easiest it will ever be.
+- **Old Vercel deployments bypass the login.** Vercel keeps every past deployment at its own
+  permanent URL with that build's env vars attached, and they all read the same live
+  database. Any deployment from before 2026-09-16 serves the pre-auth UI, which needs only
+  a board passphrase — so a passphrase plus an old URL is full read/write access to
+  production with no sign-in. Rotating passphrases does **not** close this: `KEY_PEPPER` is
+  unchanged, so a new passphrase hashes the same on an old build, and `ADMIN_KEY` is baked
+  into each deployment at build time, so an old build keeps accepting the old key whatever
+  you set in Vercel now. The fix is Vercel Deployment Protection, or deleting the old
+  deployments — nothing else removes the path. Not tested end-to-end: the session that
+  found it had no network route to Vercel. Verify before relying on either direction.
 - The hub registry entry on the VPS is still titled "Inditress Board".
