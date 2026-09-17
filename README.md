@@ -106,5 +106,10 @@ bash tests/isolation-test.sh <base-url>     # tenant isolation + auth, against a
 ```
 
 The second needs `INDITRESS_PASSPHRASE`, `JBJ_PASSPHRASE` and `ADMIN_KEY` in the environment.
+To run it against a **preview** deployment, also set `VERCEL_BYPASS` to the project's
+Protection Bypass for Automation secret (Vercel → Settings → Deployment Protection) —
+otherwise Vercel answers every request with an SSO redirect instead of the app, and the
+whole suite fails in ways that look like code faults. Previews read the `dev` database, so
+Inditress counts there reflect whenever `dev` was last refreshed.
 It creates and deletes its own throwaway card and user on JBJ, and only reads Inditress.
 Re-run it after any change to auth or a route.

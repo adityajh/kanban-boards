@@ -2,11 +2,21 @@
 # Tenant-isolation + regression checks for kanban-boards. Usage: isolation-test.sh <base-url>
 # Needs INDITRESS_PASSPHRASE, JBJ_PASSPHRASE, ADMIN_KEY in the environment.
 B="${1:-http://localhost:3100}"
+B="${B%/}"   # a trailing slash would double up in every path below
 PASS=0; FAIL=0
 IND="Authorization: Bearer $INDITRESS_PASSPHRASE"
 JBJ="Authorization: Bearer $JBJ_PASSPHRASE"
 ADM="Authorization: Bearer $ADMIN_KEY"
 CT="Content-Type: application/json"
+
+# Vercel protects preview deployments, so a bare curl gets an SSO redirect rather than the
+# app. Set VERCEL_BYPASS to the project's "Protection Bypass for Automation" secret to test
+# a preview without turning that protection off. Unset, this changes nothing.
+CURL_EXTRA=()
+if [ -n "${VERCEL_BYPASS:-}" ]; then
+  CURL_EXTRA=(-H "x-vercel-protection-bypass: $VERCEL_BYPASS" -H "x-vercel-set-bypass-cookie: true")
+fi
+curl() { command curl "${CURL_EXTRA[@]}" "$@"; }
 
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 check() { # name expected actual
