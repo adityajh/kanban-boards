@@ -39,7 +39,7 @@ Without `X-Tenant` it only works on `/admin/*`.
   "id": 1,
   "title": "Finalise the shade card",
   "description": "…",
-  "status": "todo | in_progress | review | done",
+  "status": "todo | in_progress | stuck | review | done",
   "assignee": "<one of the board's people> | Unassigned",
   "tag": "<one of the board's tags> | \"\"",
   "position": 173.5,
@@ -118,7 +118,7 @@ admin and gets `401` here.
 
 | Method | Path | Body | Does |
 |--------|------|------|------|
-| GET | `/admin/overview` | — | Per-board column counts, Review queue, stalled cards (in progress, 14+ days untouched), recent notes |
+| GET | `/admin/overview` | — | Per-board column counts, Review queue, stuck cards, stalled cards (in progress, 14+ days untouched), recent notes |
 | GET | `/admin/tenants` | — | List boards (never returns passphrases) |
 | POST | `/admin/tenants` | `{slug, name, passphrase?, adminUsername?, config: {names, tags?, brand?, tagline?, accent?}}` | Create a board **and its first admin** (`adminUsername` defaults to the first person listed). Returns `{tenant, passphrase, admin:{username, displayName, password, existing}}`. If that admin already has an account they join with their existing password and `password` is `null` |
 | PATCH | `/admin/tenants/:slug` | `{name?, config?, rotate?, passphrase?}` | Rename, change settings (merged), or rotate the passphrase |
@@ -142,4 +142,13 @@ curl -s -X PATCH -H "Authorization: Bearer $KEY" -H "Content-Type: application/j
 
 ## Columns
 
-`todo` → `in_progress` → `review` → `done`. "Review" is Adi's sign-off gate.
+`todo` → `in_progress` → `review` → `done`, plus `stuck`. "Review" is Adi's sign-off gate.
+
+`stuck` is a siding, not a step: work that has started and cannot proceed. It sits beside
+`in_progress` rather than after it, and a card leaves it in whichever direction the blockage
+clears. `/admin/overview` lists stuck cards separately from stalled ones — stuck is declared
+by a person, stalled is inferred from fourteen days of silence.
+
+Status is not constrained by the database or validated by the API, so a client can write any
+string. Anything outside this list renders in no column and is reachable only through the
+API, which is a way to lose a card by typo.

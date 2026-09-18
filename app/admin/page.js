@@ -82,12 +82,13 @@ export default function Admin() {
             <p className="hint">Your admin key also opens any board.</p>
             <div className="ascroll">
               <table className="atable">
-                <thead><tr><th>Board</th><th>To Do</th><th>In Progress</th><th>Review</th><th>Done</th><th>Last activity</th></tr></thead>
+                <thead><tr><th>Board</th><th>To Do</th><th>In Progress</th><th>Stuck</th><th>Review</th><th>Done</th><th>Last activity</th></tr></thead>
                 <tbody>
                   {data.boards.map(b => (
                     <tr key={b.slug}>
                       <td><a href={'/' + b.slug}>{b.name}</a><span className="slug">/{b.slug}</span></td>
                       <td>{b.todo}</td><td>{b.in_progress}</td>
+                      <td className={b.stuck ? 'hot' : ''}>{b.stuck}</td>
                       <td className={b.review ? 'hot' : ''}>{b.review}</td><td>{b.done}</td>
                       <td>{b.last_activity ? timeAgo(b.last_activity) : '—'}</td>
                     </tr>
@@ -100,6 +101,12 @@ export default function Admin() {
           <section>
             <h3>Waiting for your review <span>{data.review.length}</span></h3>
             {cardList(data.review, 'Nothing in Review.')}
+          </section>
+
+          <section>
+            <h3>Stuck <span>{(data.stuck || []).length}</span></h3>
+            <p className="hint">Someone has said this cannot move. Longest stuck first.</p>
+            {cardList(data.stuck || [], 'Nothing stuck.')}
           </section>
 
           <section>

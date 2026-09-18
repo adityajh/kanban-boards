@@ -7,7 +7,7 @@ Neon Postgres. Started life as the Inditress board.
 
 - Live: https://board-iota-nine.vercel.app/<slug> (Vercel project `board`)
 - Board settings: `/<slug>/settings` (your password; and for board admins, board look-and-feel and people)
-- Admin overview: `/admin` (all boards, Review queue, stalled cards, recent notes, create a board)
+- Admin overview: `/admin` (all boards, Review queue, stuck and stalled cards, recent notes, create a board)
 - API reference: [API.md](API.md)
 
 ## How tenancy works

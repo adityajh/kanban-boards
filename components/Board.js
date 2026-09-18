@@ -2,9 +2,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import { timeAgo, store } from './util';
 
+// Stuck sits after In Progress: it is where started work goes when it cannot proceed, not a
+// step on the way to Review. One list drives the columns, the drop targets and the status
+// select on a card, so a stage exists in all three places or none.
 const COLS = [
   { id: 'todo', label: 'To Do' },
   { id: 'in_progress', label: 'In Progress' },
+  { id: 'stuck', label: 'Stuck' },
   { id: 'review', label: 'Review' },
   { id: 'done', label: 'Done' },
 ];

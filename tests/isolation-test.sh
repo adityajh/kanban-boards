@@ -114,6 +114,17 @@ echo "== admin"
 check "admin + X-Tenant jbj sees jbj" jbj "$(curl -s -H "$ADM" -H 'X-Tenant: jbj' $B/api/tenant | jget 'd["slug"]')"
 check "overview lists both boards" "['inditress', 'jbj']" "$(curl -s -H "$ADM" $B/api/admin/overview | jget "sorted(b['slug'] for b in d['boards'] if b['slug'] in ('inditress', 'jbj'))")"
 
+echo "== stages"
+# Stuck is a stage like any other over the API; what is new is that the overview reports it
+# on its own, separately from the stalled list it is easily confused with.
+check "card moves to stuck" 200 "$(code -X PATCH -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD -d '{"status":"stuck"}')"
+check "card reads back stuck" stuck "$(curl -s -H "$JBJ" $B/api/cards/$J_CARD | jget 'd["status"]')"
+OV=$(curl -s -H "$ADM" $B/api/admin/overview)
+check "overview counts jbj stuck" 1 "$(echo "$OV" | jget "[b['stuck'] for b in d['boards'] if b['slug']=='jbj'][0]")"
+check "overview lists the stuck card" True "$(echo "$OV" | jget "any(c['id']==$J_CARD for c in d['stuck'])")"
+check "stalled stays in-progress only" True "$(echo "$OV" | jget "all(c['id']!=$J_CARD for c in d['stalled'])")"
+check "card moves back out of stuck" 200 "$(code -X PATCH -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD -d '{"status":"todo"}')"
+
 echo "== pages"
 check "/ redirects to /inditress" /inditress "$(curl -s -o /dev/null -w '%{redirect_url}' $B/ | sed -E 's#^https?://[^/]+##')"
 check "/inditress 200" 200 "$(code $B/inditress)"
