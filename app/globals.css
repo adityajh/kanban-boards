@@ -86,6 +86,8 @@ textarea.desc{width:100%;min-height:56px;border:1px solid var(--line-2);border-r
 .btn.danger{background:none;color:var(--ink-60);border:1px solid var(--line-2)}
 .btn.danger:hover{color:#9B3B2E;border-color:#9B3B2E;background:none}
 .modal-foot{display:flex;justify-content:space-between;margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}
+.foot-left{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.confirmtext{font-size:12px;color:var(--ink-60)}
 
 /* ---- gates ---- */
 .gate{max-width:380px;margin:15vh auto;background:var(--bone);border:1px solid var(--line);border-radius:12px;padding:34px 30px;text-align:center;box-shadow:var(--shadow);position:relative;overflow:hidden}

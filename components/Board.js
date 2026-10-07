@@ -31,6 +31,14 @@ export default function Board({ slug }) {
   const [resources, setResources] = useState([]);
   const [resLabel, setResLabel] = useState('');
   const [resUrl, setResUrl] = useState('');
+  // Which column is taking a new project, and what has been typed into it. This used to be
+  // window.prompt(), which is a modal outside the page: it cannot be styled or cancelled
+  // gracefully, some browsers suppress it, and an automated browser cannot type into it at
+  // all — so an agent driving the board either hung on the dialog or saw the click do
+  // nothing. An input in the page works the same for a person and for anything else.
+  const [adding, setAdding] = useState(null);
+  const [newTitle, setNewTitle] = useState('');
+  const [delRes, setDelRes] = useState(null);
 
   useEffect(() => {
     // These used to hold the shared passphrase. Per-person logins replaced it, so clear
@@ -103,8 +111,9 @@ export default function Board({ slug }) {
     setResources(rs => [...rs, r]); setResLabel(''); setResUrl('');
   };
   const delResource = async (id) => {
-    if (!confirm('Remove this from the Library?')) return;
-    await api('/resources/' + id, 'DELETE'); setResources(rs => rs.filter(r => r.id !== id));
+    await api('/resources/' + id, 'DELETE');
+    setResources(rs => rs.filter(r => r.id !== id));
+    setDelRes(null);
   };
 
   useEffect(() => { if (tenant) load(); }, [tenant, load]);
@@ -132,11 +141,18 @@ export default function Board({ slug }) {
     if (window.location.search) window.history.replaceState(null, '', window.location.pathname);
   };
   const patchCard = async (id, fields) => { const u = await api('/cards/' + id, 'PATCH', fields); setCards(cs => cs.map(c => c.id === id ? { ...c, ...u } : c)); };
+  // The field stays open after a card is added, so a column can be filled in one go.
   const addCard = async (status) => {
-    const title = prompt('New project title:'); if (!title) return;
-    const c = await api('/cards', 'POST', { title, status }); setCards(cs => [...cs, c]);
+    const title = newTitle.trim();
+    if (!title) { setAdding(null); return; }
+    try {
+      const c = await api('/cards', 'POST', { title, status });
+      setCards(cs => [...cs, c]);
+      setNewTitle('');
+    } catch (e) { setErr(e.message); }
   };
-  const delCard = async (id) => { if (!confirm('Delete this project and all its subtasks, links and notes?')) return; await api('/cards/' + id, 'DELETE'); setCards(cs => cs.filter(c => c.id !== id)); closeCard(); };
+  // Confirmation lives in the modal now, for the same reason as above.
+  const delCard = async (id) => { await api('/cards/' + id, 'DELETE'); setCards(cs => cs.filter(c => c.id !== id)); closeCard(); };
 
   // Move a card to a column, optionally before another card. Uses fractional
   // positions so only the moved card needs persisting.
@@ -210,7 +226,23 @@ export default function Board({ slug }) {
                     </div>
                   );
                 })}
-                <button className="addcard" onClick={() => addCard(col.id)}>+ Add project</button>
+                {adding === col.id ? (
+                  <div className="addinline">
+                    <input autoFocus value={newTitle} placeholder="Project title…"
+                      aria-label={'New project in ' + col.label}
+                      onChange={e => setNewTitle(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') addCard(col.id);
+                        if (e.key === 'Escape') { setAdding(null); setNewTitle(''); }
+                      }} />
+                    <button className="btn" onClick={() => addCard(col.id)}>Add</button>
+                    <button className="x" title="Cancel"
+                      onClick={() => { setAdding(null); setNewTitle(''); }}>×</button>
+                  </div>
+                ) : (
+                  <button className="addcard"
+                    onClick={() => { setAdding(col.id); setNewTitle(''); }}>+ Add project</button>
+                )}
               </div>
             </div>
           );
@@ -224,7 +256,15 @@ export default function Board({ slug }) {
           {resources.map(r => (
             <div key={r.id} className="res">
               <a href={r.url} target="_blank" rel="noreferrer">{r.label}</a>
-              <button className="x" onClick={() => delResource(r.id)}>×</button>
+              {delRes === r.id ? (
+                <span className="foot-left">
+                  <button className="btn danger" autoFocus onClick={() => delResource(r.id)}>Remove</button>
+                  <button className="btn" onClick={() => setDelRes(null)}>Keep</button>
+                </span>
+              ) : (
+                <button className="x" title="Remove from Library"
+                  onClick={() => setDelRes(r.id)}>×</button>
+              )}
             </div>
           ))}
           <div className="addinline">
@@ -368,6 +408,8 @@ function Detail({ card, user, names, tags, api, reload, patchCard, delCard, clos
   const [linkLabel, setLinkLabel] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
   const [note, setNote] = useState('');
+  const [confirmDel, setConfirmDel] = useState(false);
+  useEffect(() => { setConfirmDel(false); }, [card.id]);
 
   const refreshLocal = async () => { const all = await api('/cards/' + card.id); setC(all); reload(); };
 
@@ -460,7 +502,17 @@ function Detail({ card, user, names, tags, api, reload, patchCard, delCard, clos
         </div>
 
         <div className="modal-foot">
-          <button className="btn danger" onClick={() => delCard(card.id)}>Delete project</button>
+          <div className="foot-left">
+            {confirmDel ? (
+              <>
+                <span className="confirmtext">Delete this project and all its subtasks, links and notes?</span>
+                <button className="btn danger" autoFocus onClick={() => delCard(card.id)}>Delete</button>
+                <button className="btn" onClick={() => setConfirmDel(false)}>Keep</button>
+              </>
+            ) : (
+              <button className="btn danger" onClick={() => setConfirmDel(true)}>Delete project</button>
+            )}
+          </div>
           <button className="btn ghost" onClick={close}>Close</button>
         </div>
       </div>
