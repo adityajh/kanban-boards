@@ -8,7 +8,7 @@ export async function OPTIONS() { return options(); }
 export const PATCH = withTenant(async (req, { params }, t) => {
   const id = idParam(params);
   if (!id) return json({ error: 'not found' }, 404);
-  const b = await req.json();
+  const b = await req.json().catch(() => ({}));
   const [st] = await sql`update subtasks s set
     title = coalesce(${b.title ?? null}, s.title),
     done = coalesce(${b.done ?? null}, s.done),

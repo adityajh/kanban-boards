@@ -6,7 +6,7 @@ export async function OPTIONS() { return options(); }
 export const POST = withTenant(async (req, { params }, t) => {
   const cardId = idParam(params);
   if (!cardId || !(await ownsCard(cardId, t.id))) return json({ error: 'not found' }, 404);
-  const b = await req.json();
+  const b = await req.json().catch(() => ({}));
   if (!b.url) return json({ error: 'url required' }, 400);
   const [lk] = await sql`insert into links (card_id, label, url) values (${cardId}, ${b.label || ''}, ${b.url}) returning *`;
   await sql`update cards set updated_at=now() where id=${cardId}`;

@@ -114,6 +114,18 @@ echo "== admin"
 check "admin + X-Tenant jbj sees jbj" jbj "$(curl -s -H "$ADM" -H 'X-Tenant: jbj' $B/api/tenant | jget 'd["slug"]')"
 check "overview lists both boards" "['inditress', 'jbj']" "$(curl -s -H "$ADM" $B/api/admin/overview | jget "sorted(b['slug'] for b in d['boards'] if b['slug'] in ('inditress', 'jbj'))")"
 
+echo "== malformed bodies answer 400, not 500"
+# Every board write route parses its body with a catch, so a missing or broken body reaches
+# the field check and says what is wrong. Unguarded it throws, and a client sees only a 500.
+check "POST /cards no body"      400 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards)"
+check "POST /cards bad json"     400 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards -d '{nope')"
+check "POST /cards empty object" 400 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards -d '{}')"
+check "POST subtasks no body"    400 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/subtasks)"
+check "POST links no body"       400 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/links)"
+check "POST notes no body"       400 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/notes)"
+check "POST resources no body"   400 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/resources)"
+check "PATCH card no body"       200 "$(code -X PATCH -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD)"
+
 echo "== stages"
 # Stuck is a stage like any other over the API; what is new is that the overview reports it
 # on its own, separately from the stalled list it is easily confused with.

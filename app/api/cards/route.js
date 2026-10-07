@@ -18,8 +18,12 @@ export const GET = withTenant(async (req, ctx, t) => {
   return json(out);
 });
 
+// The body is parsed with a catch so a missing, empty or malformed one falls through to the
+// field checks below and answers 400 with what is wrong. Unguarded, `req.json()` throws and
+// the route answers 500 — which tells a client nothing, and looks like the server is broken
+// rather than the request. Reads never showed this because a GET carries no body.
 export const POST = withTenant(async (req, ctx, t) => {
-  const b = await req.json();
+  const b = await req.json().catch(() => ({}));
   if (!b.title) return json({ error: 'title required' }, 400);
   const status = b.status || 'todo';
   const [{ max }] = await sql`select coalesce(max(position),0) as max from cards

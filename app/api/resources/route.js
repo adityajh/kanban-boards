@@ -8,7 +8,7 @@ export const GET = withTenant(async (req, ctx, t) => {
   return json(rows.map(clean));
 });
 export const POST = withTenant(async (req, ctx, t) => {
-  const b = await req.json();
+  const b = await req.json().catch(() => ({}));
   if (!b.url || !b.label) return json({ error: 'label and url required' }, 400);
   const [{ max }] = await sql`select coalesce(max(position),0) as max from resources where tenant_id=${t.id}`;
   const [r] = await sql`insert into resources (tenant_id, label, url, category, position)

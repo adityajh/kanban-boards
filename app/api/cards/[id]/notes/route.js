@@ -6,7 +6,7 @@ export async function OPTIONS() { return options(); }
 export const POST = withTenant(async (req, { params }, t, c) => {
   const cardId = idParam(params);
   if (!cardId || !(await ownsCard(cardId, t.id))) return json({ error: 'not found' }, 404);
-  const b = await req.json();
+  const b = await req.json().catch(() => ({}));
   if (!b.body) return json({ error: 'body required' }, 400);
   // A signed-in person is attributed from their session, not from what the client claims.
   // Agents on a bearer token still pass an author, as they always have.
