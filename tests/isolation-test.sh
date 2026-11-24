@@ -319,6 +319,111 @@ echo "-- the real boards are untouched by all of that"
 check "still four boards or more" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget 'len(d) >= 2')"
 check "inditress still there" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug']=='inditress' for b in d)")"
 
+echo "== agents have their own identity"
+# Bodies are hoisted into variables rather than built inline inside "$( … )": bash 3.2
+# mangles escaped quotes there, and a silently empty body makes a negative check pass for
+# the wrong reason. The guard below proves each one parses before it is sent.
+AG_NEW='{"name":"zz-test-agent","scope":"write"}'
+AG_RO_NEW='{"name":"zz-test-reader","scope":"read"}'
+check "agent bodies are valid json" OK "$(printf '%s' "$AG_NEW$AG_RO_NEW" | python3 -c 'import sys;print("OK")')"
+
+AG=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents -d "$AG_NEW")
+AG_ID=$(echo "$AG" | jget 'd.get("agent",{}).get("id","")')
+AG_TOK=$(echo "$AG" | jget 'd.get("token","")')
+AGH="Authorization: Bearer $AG_TOK"
+check "an agent token is issued once" True "$([ -n "$AG_TOK" ] && echo True || echo False)"
+check "the token names its board" True "$(echo "$AG_TOK" | grep -q '^agt-jbj-' && echo True || echo False)"
+check "listing agents never returns a token" False "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "any('token' in a for a in d)")"
+check "the agent opens its own board" jbj "$(curl -s -H "$AGH" $B/api/tenant | jget 'd["slug"]')"
+check "and is refused another board's card" 404 "$(code -H "$AGH" $B/api/cards/$IND_CARD)"
+check "the agent is assignable" True "$(curl -s -H "$JBJ" $B/api/tenant | jget "'zz-test-agent' in d['config']['names']")"
+check "an agent cannot reach settings" 403 "$(code -H "$AGH" -H "$JT" $B/api/settings)"
+check "an agent cannot reach the admin API" 401 "$(code -H "$AGH" $B/api/admin/tenants)"
+
+echo "-- attribution comes from the credential, not the body"
+LIE='{"body":"written by the agent","author":"Adi"}'
+A_CARD=$(curl -s -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz agent card"}' | jget 'd["id"]')
+NOTE=$(curl -s -X POST -H "$AGH" -H "$CT" $B/api/cards/$A_CARD/notes -d "$LIE")
+check "an agent cannot sign as someone else" zz-test-agent "$(echo "$NOTE" | jget 'd["author"]')"
+
+echo "-- audience"
+check "a card an agent creates is agent_only" agent_only "$(curl -s -H "$AGH" $B/api/cards/$A_CARD | jget 'd["audience"]')"
+HUMAN='{"title":"zz human only card","audience":"human_only"}'
+H_CARD=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d "$HUMAN" | jget 'd["id"]')
+P_CARD=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz person card"}' | jget 'd["id"]')
+check "a card a person creates is for both" both "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$P_CARD | jget 'd["audience"]')"
+check "and the agent does see that one" True "$(curl -s -H "$AGH" $B/api/cards | jget "any(c['id']==$P_CARD for c in d)")"
+check "the agent is not shown a human_only card" False "$(curl -s -H "$AGH" $B/api/cards | jget "any(c['id']==$H_CARD for c in d)")"
+check "and gets 404 fetching it directly" 404 "$(code -H "$AGH" $B/api/cards/$H_CARD)"
+check "and 404 adding a note to it" 404 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards/$H_CARD/notes -d '{"body":"x"}')"
+check "and 404 patching it" 404 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$H_CARD -d '{"title":"pwned"}')"
+check "and 404 deleting it" 404 "$(code -X DELETE -H "$AGH" $B/api/cards/$H_CARD)"
+check "the agent is told how many rows it cannot see" True "$(curl -s -D - -o /dev/null -H "$AGH" $B/api/cards | grep -qi '^x-hidden-cards: *[1-9]' && echo True || echo False)"
+check "a person still sees the human_only card" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "any(c['id']==$H_CARD for c in d)")"
+check "an agent cannot create a human_only card" 400 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d "$HUMAN")"
+check "an agent cannot hide a card from people" 400 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$A_CARD -d '{"audience":"human_only"}')"
+check "a bad audience is refused" 400 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"x","audience":"nobody"}')"
+
+echo "-- a read-only agent is refused every write"
+RO=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents -d "$AG_RO_NEW")
+RO_ID=$(echo "$RO" | jget 'd.get("agent",{}).get("id","")')
+ROH="Authorization: Bearer $(echo "$RO" | jget 'd.get("token","")')"
+check "a read-only agent can read" 200 "$(code -H "$ROH" $B/api/cards)"
+check "but cannot create a card" 403 "$(code -X POST -H "$ROH" -H "$CT" $B/api/cards -d '{"title":"nope"}')"
+check "cannot add a note" 403 "$(code -X POST -H "$ROH" -H "$CT" $B/api/cards/$A_CARD/notes -d '{"body":"nope"}')"
+check "cannot write a document" 403 "$(code -X PUT -H "$ROH" -H "$CT" $B/api/docs/zz/nope -d '{"body":"x"}')"
+
+echo "-- a disabled agent stops working, and its history does not"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$RO_ID -d '{"disabled":true}'
+check "a disabled token is refused" 401 "$(code -H "$ROH" $B/api/cards)"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$RO_ID -d '{"disabled":false}'
+check "and works again when re-enabled" 200 "$(code -H "$ROH" $B/api/cards)"
+OLD_TOK="$ROH"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$RO_ID -d '{"rotate":true}'
+check "rotating kills the old token" 401 "$(code -H "$OLD_TOK" $B/api/cards)"
+
+echo "== documents"
+DOC='{"title":"ZZ brief","body":"first version"}'
+DOC2='{"body":"second version","expected_version":1}'
+DOC_STALE='{"body":"third version","expected_version":1}'
+check "doc bodies are valid json" OK "$(printf '%s' "$DOC$DOC2$DOC_STALE" | python3 -c 'import sys;print("OK")')"
+check "a document is created at its key" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d "$DOC")"
+check "it reads back by key" "first version" "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget 'd["body"]')"
+check "an agent's document defaults to agent_only" agent_only "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget 'd["audience"]')"
+check "the list carries no bodies" False "$(curl -s -H "$AGH" $B/api/docs | jget "any('body' in x for x in d)")"
+check "the right version replaces it" 200 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d "$DOC2")"
+check "a stale version is refused" 409 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d "$DOC_STALE")"
+check "the stale write did not land" "second version" "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget 'd["body"]')"
+check "append needs no version" 200 "$(code -X POST -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d '{"body":"an appended line"}')"
+check "and keeps what was there" True "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget "'second version' in d['body'] and 'an appended line' in d['body']")"
+check "the append is attributed" True "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget "'zz-test-agent' in d['body']")"
+check "an agent cannot write a human_only doc" 400 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/secret -d '{"body":"x","audience":"human_only"}')"
+check "a key on another board is not found" 404 "$(code -H "$IND" $B/api/docs/zz/brief)"
+check "an empty append is refused" 400 "$(code -X POST -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d '{"body":"  "}')"
+
+echo "== the event log"
+EV=$(curl -s -H "$ADM" -H "$JT" "$B/api/events?limit=200")
+check "the log records the agent by name" True "$(echo "$EV" | jget "any(e['actor']['name']=='zz-test-agent' for e in d['events'])")"
+check "it says what kind of actor that was" True "$(echo "$EV" | jget "any(e['actor']['kind']=='agent' for e in d['events'])")"
+check "card creation is logged" True "$(echo "$EV" | jget "any(e['verb']=='card.created' for e in d['events'])")"
+check "document appends are logged" True "$(echo "$EV" | jget "any(e['verb']=='doc.appended' for e in d['events'])")"
+check "the cursor is an id, not a time" True "$(echo "$EV" | jget "isinstance(d['cursor'], int)")"
+CUR=$(echo "$EV" | jget 'd["cursor"]')
+check "reading from the cursor returns nothing new" 0 "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$CUR" | jget 'len(d["events"])')"
+curl -s -o /dev/null -X POST -H "$AGH" -H "$CT" $B/api/cards/$A_CARD/notes -d '{"body":"after the cursor"}'
+check "and picks up what happens after it" True "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$CUR" | jget "any(e['verb']=='note.added' for e in d['events'])")"
+check "another board cannot read this log" True "$(curl -s -H "$IND" "$B/api/events?limit=200" | jget "all(e['actor']['name']!='zz-test-agent' for e in d['events'])")"
+
+echo "-- agent cleanup"
+curl -s -o /dev/null -X DELETE -H "$AGH" $B/api/docs/zz/brief
+curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$A_CARD
+curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$H_CARD
+curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$P_CARD
+check "the agent is removed" True "$(curl -s -X DELETE -H "$ADM" -H "$JT" $B/api/settings/agents/$AG_ID | jget 'd.get("ok") is True')"
+check "its token stops working at once" 401 "$(code -H "$AGH" $B/api/cards)"
+check "but the note it wrote keeps its name" True "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?limit=200" | jget "any(e['actor']['name']=='zz-test-agent' for e in d['events'])")"
+curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/settings/agents/$RO_ID
+
 echo "== cleanup"
 curl -s -o /dev/null -X DELETE -H "$JBJ" $B/api/cards/$JN_CARD
 LAST=$(curl -s -X DELETE -H "$ADM" -H "$JT" $B/api/settings/users/$MEMBER_ID)

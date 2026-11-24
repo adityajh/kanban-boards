@@ -6,6 +6,7 @@ import {
   hashPassword, verifyPassword, burnVerify, newPassword, validUsername,
   readCookie, clearSessionCookie, MIN_PASSWORD, publicPerson, SESSION_COOKIE,
 } from '../lib/password.mjs';
+import { newAgentToken, validAgentName, SCOPES } from '../lib/agent-token.mjs';
 
 let pass = 0, fail = 0;
 const t = async (name, fn) => {
@@ -141,6 +142,29 @@ await t('admin is never part of a person', () => {
     password_hash: 'x', is_admin: true,
   });
   assert.ok(!('isAdmin' in out), 'publicPerson must not carry is_admin');
+});
+
+await t('agent token carries its board and 192 bits of randomness', () => {
+  const tok = newAgentToken('zealxle');
+  assert.ok(tok.startsWith('agt-zealxle-'), 'token should name its board');
+  const rand = tok.slice('agt-zealxle-'.length);
+  assert.ok(rand.length >= 32, `random part too short: ${rand.length}`);
+  assert.notStrictEqual(newAgentToken('zealxle'), tok, 'tokens must not repeat');
+});
+
+await t('agent names stay token-like', () => {
+  for (const ok of ['prospecting', 'claude-brain', 'icp.research', 'a1']) {
+    assert.ok(validAgentName(ok), `${ok} should be valid`);
+  }
+  // Spaces and punctuation are refused because the name is also a note author and an
+  // assignee: "Research Agent, Claude" in an assignee field is three names or one.
+  for (const bad of ['', 'a', 'has space', '-leading', 'what?', 'x'.repeat(41)]) {
+    assert.ok(!validAgentName(bad), `${JSON.stringify(bad)} should be rejected`);
+  }
+});
+
+await t('scopes are exactly read and write', () => {
+  assert.deepStrictEqual([...SCOPES].sort(), ['read', 'write']);
 });
 
 console.log(`\npassed ${pass}, failed ${fail}`);

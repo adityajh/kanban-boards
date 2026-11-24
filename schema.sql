@@ -17,6 +17,11 @@ create table if not exists cards (
   assignee text default 'Unassigned',
   tag text default '',
   position double precision not null default 0,
+  -- Who the card is for. human_only is enforced against agent tokens in every query;
+  -- agent_only is a view filter the board UI applies and any admin can lift.
+  audience text not null default 'both'
+    check (audience in ('both', 'human_only', 'agent_only')),
+  due_at timestamptz,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -90,3 +95,51 @@ create table if not exists sessions (
 );
 create index if not exists sessions_person_idx on sessions (person_id);
 create index if not exists sessions_expires_idx on sessions (expires_at);
+
+-- One identity per agent, scoped to a board. Token stored as HMAC-SHA256(KEY_PEPPER, token),
+-- exactly like a board passphrase, so a leak of this table hands over no working credential.
+create table if not exists agents (
+  id serial primary key,
+  tenant_id int not null references tenants(id) on delete cascade,
+  name text not null,
+  token_hash text not null unique,
+  scope text not null default 'write',
+  webhook_url text,
+  disabled_at timestamptz,
+  last_seen_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists agents_tenant_name on agents (tenant_id, lower(name));
+create index if not exists agents_token on agents (token_hash);
+
+-- Who did what, to which thing, when. actor_name is denormalised so the history still reads
+-- after an agent or a person is removed. id is the cursor an agent reads forward from.
+create table if not exists events (
+  id bigserial primary key,
+  tenant_id int not null references tenants(id) on delete cascade,
+  actor_kind text not null,
+  actor_id int,
+  actor_name text not null,
+  verb text not null,
+  subject_type text not null,
+  subject_id text not null,
+  data jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists events_tenant_id_idx on events (tenant_id, id);
+
+-- Text agents author and re-read, addressed by a key they can construct: 'icp/zeal'.
+create table if not exists documents (
+  id serial primary key,
+  tenant_id int not null references tenants(id) on delete cascade,
+  key text not null,
+  title text not null default '',
+  body text not null default '',
+  audience text not null default 'both'
+    check (audience in ('both', 'human_only', 'agent_only')),
+  version int not null default 1,
+  updated_by text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists documents_tenant_key on documents (tenant_id, lower(key));

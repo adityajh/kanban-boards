@@ -3,9 +3,9 @@ import { json, options, idParam } from '../../../../../lib/http';
 import { withTenant, ownsCard } from '../../../../../lib/tenant';
 export const dynamic = 'force-dynamic';
 export async function OPTIONS() { return options(); }
-export const POST = withTenant(async (req, { params }, t) => {
+export const POST = withTenant(async (req, { params }, t, c) => {
   const cardId = idParam(params);
-  if (!cardId || !(await ownsCard(cardId, t.id))) return json({ error: 'not found' }, 404);
+  if (!cardId || !(await ownsCard(cardId, t.id, c))) return json({ error: 'not found' }, 404);
   const b = await req.json().catch(() => ({}));
   if (!b.title) return json({ error: 'title required' }, 400);
   const [{ max }] = await sql`select coalesce(max(position),0) as max from subtasks where card_id=${cardId}`;

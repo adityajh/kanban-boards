@@ -30,7 +30,8 @@ Neon Postgres. Started life as the Inditress board.
 |---|---|---|
 | A person | username + password → `board_session` cookie | every board they are a member of; settings; their own password |
 | A board admin | as above, with `is_admin` on that board's membership | plus that board's settings and people — nothing on any other board |
-| An agent | board passphrase as a bearer token | the board's cards and resources — **not** settings or passwords |
+| An agent | its **own** token (Settings → Agents) | the board's cards, documents and resources, attributed to its name — never a `human_only` row, and nothing at all if its scope is `read` |
+| A legacy agent | board passphrase as a bearer token | the same, but attributable to nobody. Being retired in favour of per-agent tokens |
 | A master admin | username + password, with `people.is_master` | plus creating, configuring and deleting **boards** — but no board's contents until they join it |
 | Adi | `ADMIN_KEY` (+ `X-Tenant`) | every board, `/api/admin/*`, and any board's settings |
 
@@ -66,7 +67,8 @@ account on no boards can never be reached or removed again.
 - `app/admin/page.js`: admin overview
 - `app/api/**`: REST API (board routes + `admin/`)
 - `app/[slug]/settings/page.js` + `components/Settings.js`: per-board settings
-- `lib/tenant.js`: tenant resolution, route wrappers (`withTenant`, `withUser`, `withAdmin`), config normalisation
+- `lib/tenant.js`: tenant resolution, route wrappers (`withTenant`, `withUser`, `withAdmin`), audience rules, config normalisation
+- `lib/agents.js` + `lib/agent-token.mjs`: per-agent identities · `lib/events.js`: the append-only log
 - `lib/auth.js`: sessions and membership lookups · `lib/people.js`: board rosters
 - `lib/password.mjs`: scrypt hashing, cookies (pure, no imports, unit-tested)
 - `lib/http.js`: JSON/CORS helpers · `tests/`: `auth-test.mjs` (no DB) and `isolation-test.sh` (live)

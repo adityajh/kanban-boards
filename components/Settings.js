@@ -1,11 +1,13 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
+import { timeAgo } from './util';
 
 const DEFAULT_ACCENT = '#D67D2E';
 const TABS = [
   { id: 'profile', label: 'Profile' },
   { id: 'board', label: 'Board' },
   { id: 'people', label: 'People' },
+  { id: 'agents', label: 'Agents' },
 ];
 
 const asList = (s) => s.split(',').map(x => x.trim()).filter(Boolean);
@@ -91,6 +93,7 @@ export default function Settings({ slug }) {
         {tab === 'profile' && <Profile me={data.me} api={api} />}
         {tab === 'board' && data.isAdmin && <BoardSettings tenant={data.tenant} api={api} onSaved={load} />}
         {tab === 'people' && data.isAdmin && <People users={data.users} me={data.me} api={api} onChanged={load} />}
+        {tab === 'agents' && data.isAdmin && <Agents api={api} />}
         {tab === 'boards' && isMaster && <Boards adminApi={adminApi} here={slug} />}
       </div>
     </>
@@ -350,6 +353,143 @@ function People({ users, me, api, onChanged }) {
               onChange={e => setIsAdmin(e.target.checked)} /> Board admin</span>
           </label>
           <button className="btn" disabled={busy}>{busy ? 'Adding…' : 'Add person'}</button>
+        </form>
+      </section>
+    </>
+  );
+}
+
+// One identity per agent, so a write can be attributed to one of them rather than to
+// whoever happened to be holding the board passphrase. The token is shown once, here.
+function Agents({ api }) {
+  const [list, setList] = useState(null);
+  const [name, setName] = useState('');
+  const [scope, setScope] = useState('write');
+  const [issued, setIssued] = useState(null);
+  const [confirmGone, setConfirmGone] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try { setList(await api('/settings/agents')); }
+    catch (e) { setErr(e.message); }
+  }, [api]);
+  useEffect(() => { load(); }, [load]);
+
+  const run = async (fn) => {
+    setErr(''); setBusy(true);
+    try { await fn(); await load(); }
+    catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const add = (e) => {
+    e.preventDefault();
+    if (!name.trim() || busy) return;
+    run(async () => {
+      const d = await api('/settings/agents', 'POST', { name: name.trim(), scope });
+      setIssued({ name: d.agent.name, token: d.token });
+      setName(''); setScope('write');
+    });
+  };
+
+  const rotate = (a) => run(async () => {
+    const d = await api('/settings/agents/' + a.id, 'PATCH', { rotate: true });
+    setIssued({ name: d.agent.name, token: d.token, rotated: true });
+  });
+
+  const toggle = (a) => run(() => api('/settings/agents/' + a.id, 'PATCH', { disabled: !a.disabled }));
+  const setScopeOf = (a, v) => run(() => api('/settings/agents/' + a.id, 'PATCH', { scope: v }));
+  const remove = (a) => run(async () => {
+    await api('/settings/agents/' + a.id, 'DELETE');
+    setConfirmGone(null);
+  });
+
+  if (!list) return <section><h3>Agents</h3><p className="empty">{err || 'Loading…'}</p></section>;
+
+  return (
+    <>
+      <section>
+        <h3>Agents <span>{list.length}</span></h3>
+        <p className="hint">
+          Each agent gets its own token. Notes and cards it writes are attributed to its
+          name automatically — it cannot sign as anything else. A read-only agent is refused
+          every call that changes something, and none of them can see a card marked
+          human&nbsp;only.
+        </p>
+        {err && <div className="err">{err}</div>}
+
+        {list.length === 0 && <p className="empty">No agents yet.</p>}
+        {list.length > 0 && (
+          <div className="ascroll">
+            <table className="atable">
+              <thead><tr><th>Name</th><th>Scope</th><th>Last seen</th><th>State</th><th></th></tr></thead>
+              <tbody>
+                {list.map(a => (
+                  <tr key={a.id}>
+                    <td><code>{a.name}</code></td>
+                    <td>
+                      <select value={a.scope} disabled={busy}
+                        onChange={e => setScopeOf(a, e.target.value)}>
+                        <option value="write">read + write</option>
+                        <option value="read">read only</option>
+                      </select>
+                    </td>
+                    <td>{a.lastSeenAt ? timeAgo(a.lastSeenAt) : 'never'}</td>
+                    <td className={a.disabled ? '' : 'hot'}>{a.disabled ? 'disabled' : 'active'}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="linkbtn" disabled={busy} onClick={() => rotate(a)}>rotate</button>{' '}
+                      <button className="linkbtn" disabled={busy} onClick={() => toggle(a)}>
+                        {a.disabled ? 'enable' : 'disable'}
+                      </button>{' '}
+                      {confirmGone === a.id ? (
+                        <>
+                          <button className="linkbtn danger" disabled={busy}
+                            onClick={() => remove(a)}>delete</button>{' '}
+                          <button className="linkbtn" onClick={() => setConfirmGone(null)}>keep</button>
+                        </>
+                      ) : (
+                        <button className="linkbtn" onClick={() => setConfirmGone(a.id)}>remove</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {issued && (
+          <div className="created">
+            Token for <b>{issued.name}</b>{issued.rotated ? ' (rotated — the old one stopped working)' : ''}:{' '}
+            <code>{issued.token}</code>
+            <div className="hint" style={{ margin: '6px 0 0' }}>
+              Shown once. Only its hash is stored, so this cannot be looked up again — if it
+              is lost, rotate. Send it through your vault, never pasted into a chat.
+            </div>
+            <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setIssued(null)}>
+              Done
+            </button>
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h3>Add an agent</h3>
+        <p className="hint">
+          The name is used as the note author and is assignable like a person, so keep it
+          short and without spaces. Start read-only unless the agent needs to write.
+        </p>
+        <form className="aform" onSubmit={add}>
+          <label>Name<input value={name} placeholder="prospecting"
+            onChange={e => setName(e.target.value)} /></label>
+          <label>Scope
+            <select value={scope} onChange={e => setScope(e.target.value)}>
+              <option value="write">read + write</option>
+              <option value="read">read only</option>
+            </select>
+          </label>
+          <button className="btn" disabled={busy}>{busy ? 'Creating…' : 'Create agent'}</button>
         </form>
       </section>
     </>

@@ -17,6 +17,9 @@ const DEFAULT_ACCENT = '#D67D2E';
 // belong to (the server decides which), so existing Inditress users aren't asked again.
 const LEGACY_KEY = 'board_key', LEGACY_USER = 'board_user';
 
+const overdue = (c) => c.due_at && c.status !== 'done' && new Date(c.due_at) < new Date();
+const dueLabel = (d) => new Date(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+
 // Options for a select: the configured list, plus the current value if it's no longer in it.
 const withCurrent = (list, cur) => (cur && !list.includes(cur) ? [...list, cur] : list);
 
@@ -39,6 +42,10 @@ export default function Board({ slug }) {
   const [adding, setAdding] = useState(null);
   const [newTitle, setNewTitle] = useState('');
   const [delRes, setDelRes] = useState(null);
+  // Agent cards are hidden from the columns by default and switched back on here. This is a
+  // view filter and nothing more: the API returns them to people either way, because agent
+  // work no human could see would defeat the log it is written beside.
+  const [showAgent, setShowAgent] = useState(false);
 
   useEffect(() => {
     // These used to hold the shared passphrase. Per-person logins replaced it, so clear
@@ -191,13 +198,21 @@ export default function Board({ slug }) {
         {dots && <div className="dots" title={cfg.dotsTitle || ''}>{dots}</div>}
         {boards.length > 1 && <BoardSwitcher boards={boards} slug={slug} />}
         <div className="whoami">You are <b>{user}</b>{isAdminHere && <span className="badge">admin</span>}</div>
+        <button className={'linkbtn' + (showAgent ? ' on' : '')}
+          title="Show cards agents created for themselves"
+          onClick={() => setShowAgent(v => !v)}>{showAgent ? 'hide agent work' : 'show agent work'}</button>
         <a className="linkbtn" href={'/' + slug + '/settings'}>settings</a>
         <button className="linkbtn" onClick={signOut}>sign out</button>
       </div>
       {err && <div className="err" style={{ padding: '8px 22px' }}>{err}</div>}
       <div className="board">
         {COLS.map(col => {
-          const list = cards.filter(c => c.status === col.id).sort((a, b) => a.position - b.position);
+          const list = cards
+            // A card waiting on a person stays visible whatever its audience says: an
+            // approval nobody can see is a card stuck forever.
+            .filter(c => showAgent || c.audience !== 'agent_only' || c.status === 'review')
+            .filter(c => c.status === col.id)
+            .sort((a, b) => a.position - b.position);
           return (
             <div key={col.id} className={'col' + (dragCol === col.id ? ' drag' : '')}
               onDragOver={e => { e.preventDefault(); setDragCol(col.id); }}
@@ -222,7 +237,11 @@ export default function Board({ slug }) {
                         {c.notes.length > 0 && <span className="pill">💬 {c.notes.length}</span>}
                       </div>
                       {tot > 0 && <div className="bar"><i style={{ width: (done / tot * 100) + '%' }} /></div>}
-                      <div className="assignee" style={{ marginTop: 6, fontSize: 10 }}>updated {timeAgo(c.updated_at)}</div>
+                      <div className="assignee" style={{ marginTop: 6, fontSize: 10 }}>
+                        {c.audience === 'agent_only' && <span className="pill agentpill">agent</span>}
+                        {c.due_at && <span className={'pill' + (overdue(c) ? ' late' : '')}>due {dueLabel(c.due_at)}</span>}
+                        updated {timeAgo(c.updated_at)}
+                      </div>
                     </div>
                   );
                 })}
@@ -451,6 +470,9 @@ function Detail({ card, user, names, tags, api, reload, patchCard, delCard, clos
           <select value={c.status} onChange={e => saveField('status', e.target.value)}>
             {COLS.map(col => <option key={col.id} value={col.id}>{col.label}</option>)}
           </select>
+          <input type="date" value={c.due_at ? String(c.due_at).slice(0, 10) : ''}
+            title="Due date"
+            onChange={e => saveField('due_at', e.target.value || null)} />
         </div>
         <textarea className="desc" defaultValue={c.description} placeholder="Project description…" onBlur={e => saveField('description', e.target.value)} />
 

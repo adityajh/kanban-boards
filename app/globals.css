@@ -176,3 +176,6 @@ a.linkbtn{text-decoration:none;display:inline-block}
   background:var(--card);font-size:14px;color:var(--ink);letter-spacing:.02em;text-decoration:none}
 .gate .names a:hover{border-color:var(--accent);color:var(--accent)}
 .linkbtn.danger:hover{color:#9B3B2E}
+.pill.late{color:#9B3B2E;border-color:#9B3B2E}
+.pill.agentpill{color:var(--accent);border-color:var(--accent);opacity:.8}
+.linkbtn.on{color:var(--accent)}
