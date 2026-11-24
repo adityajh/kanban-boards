@@ -143,3 +143,26 @@ create table if not exists documents (
   updated_at timestamptz not null default now()
 );
 create unique index if not exists documents_tenant_key on documents (tenant_id, lower(key));
+
+-- The Plan: the board's second surface. Cards are work in motion; these rows are what is
+-- true — statuses, decisions, milestones, risks, period numbers and a log. One table with
+-- a kind, because the six differ only in which fields they carry and all want the same
+-- key, version, audience, attribution and event behind them.
+create table if not exists tracker_items (
+  id serial primary key,
+  tenant_id int not null references tenants(id) on delete cascade,
+  kind text not null check (kind in
+    ('status', 'decision', 'milestone', 'risk', 'actual', 'log')),
+  item_id text not null,
+  data jsonb not null default '{}'::jsonb,
+  audience text not null default 'both'
+    check (audience in ('both', 'human_only', 'agent_only')),
+  version int not null default 1,
+  updated_by text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists tracker_items_key
+  on tracker_items (tenant_id, kind, lower(item_id));
+create index if not exists tracker_items_kind_idx
+  on tracker_items (tenant_id, kind, created_at desc);

@@ -207,6 +207,93 @@ reads the feed on a slow timer as well as listening. Building retries to make th
 reliable would be rebuilding the feed that already is. The last delivery's status is shown
 in **Settings → Agents**, so a dead endpoint is visible rather than silent.
 
+## The Plan
+
+A board's second surface. Cards are work in motion, deleted when done; Plan rows are what is
+**true** — a decision taken in October is still true in July. Come back after a month and the
+board has churned while the Plan still reads.
+
+It appears only on boards whose config declares a `plan`, and `GET /tracker` returns `404`
+on any other. Everything below needs the ordinary board credential; no slug appears in any
+path, because the token already names the board.
+
+| Method | Path | Body | Does |
+|--------|------|------|------|
+| GET | `/tracker` | — | Everything grouped by kind, plus this board's `plan` config — one call for an agent catching up |
+| GET | `/tracker/:kind` | — | One kind, newest first. Takes `?limit=` (max 200) and `?before=<timestamp>` |
+| GET | `/tracker/:kind/:id` | — | One row |
+| PUT | `/tracker/:kind/:id` | the row's fields, plus `version?` | Create or replace. `201` on create, `200` on replace |
+| PATCH | `/tracker/:kind/:id` | some fields, plus `version?` | Merge. `null` clears a field |
+| DELETE | `/tracker/:kind/:id` | `version?` | Remove |
+| POST | `/tracker/log` | `{text, kind?, ref?}` | Append a log entry; its id is generated |
+
+**Send `version` and mean it.** A write whose version doesn't match gets `409` with the
+current row in the body, so you can re-read, redo and retry. Leave it out and you are
+overwriting whatever is there.
+
+### The six kinds
+
+| Kind | Key | Fields |
+|---|---|---|
+| `status` | a slug | `title`\*, `lane`\* (`now` `waiting` `found` `done`), `detail`, `owner`, `source`, `as_of`, `order`, `card_id` |
+| `decision` | `D-07` | `title`\*, `state`\* (`proposed` `decided` `superseded`), `owner`, `date`, `note`, `card_id`, `ref` |
+| `milestone` | a slug | `title`\*, `date`\*, `owner`, `state` (`upcoming` `done` `at-risk` `missed`), `note` |
+| `risk` | a slug | `title`\*, `level`\* (`high` `medium` `low`), `why`, `mitigation`, `owner`, `state` (`open` `watching` `closed`) |
+| `actual` | `2026-11` | `as_of`\*, `source`\*, `values` (keyed by this board's metrics), `note` |
+| `log` | generated | `text`\*, `kind` (`update` `handoff` `risk` `decision`), `ref`; `at` and `by` are set for you |
+
+\* required. An unknown field, an unknown enum value or a missing required field is `422`
+naming the field — it tells you what to fix rather than what went wrong.
+
+### Three rules the API enforces
+
+**An agent may propose a decision and never settle one.** `state: decided` or `superseded`
+from an agent token is `403`; so is one from a board admin. Only a master admin, or
+`ADMIN_KEY`, settles a decision.
+
+**`by` on a log entry comes from the credential**, never the body — the same rule note
+authors run under. A person relaying somebody else says so in the text.
+
+**Contact details are refused.** An email address or an Indian mobile number in any text
+field is `422`. It catches the obvious shapes and nothing more — `adi at example dot com`
+sails past it — so treat it as a speed bump that names what it caught, not a guarantee that
+the board is clean. Contacts belong in the CRM.
+
+### Numbers are keyed by what the board tracks
+
+An `actual` carries `values`, keyed by the metric keys in `config.plan.metrics`:
+
+```json
+PUT /tracker/actual/2026-11
+{ "as_of": "2026-11-30", "source": "outreach CRM",
+  "values": { "contacted": 400, "activated": 25, "enrolled": null } }
+```
+
+A key the board does not declare is `422`. That is what lets one table and one page serve a
+sales funnel and a release scorecard without the app knowing which it is looking at. Flat
+top-level metric fields are folded into `values` as a convenience, so a client written
+against named columns still works.
+
+`null` means *not known yet*, which is different from zero and renders differently.
+
+### What a board declares
+
+```json
+config.plan = {
+  "title": "Counsellor Funnel",
+  "goal":    { "number": 20, "unit": "enrolled", "by": "2027-07-31", "note": "…" },
+  "metrics": [ { "key": "contacted", "label": "Contacted", "target": 1100 }, … ],
+  "periods": [ { "id": "2026-11", "label": "Nov 2026",
+                 "targets": { "contacted": 400, "enrolled": 0 } }, … ],
+  "sections": [ { "title": "Phases", "columns": [...], "rows": [...] },
+                { "title": "Ground rules", "bullets": [...] } ]
+}
+```
+
+Set through `PATCH /settings` like any other config, but **only by a master admin**: the
+plan is the board's constitution, and changing the metric set reinterprets every number
+already recorded. A board admin editing settings gets `403` for the `plan` key alone.
+
 ## Board-management endpoints
 
 Creating, configuring and deleting boards. Two ways in: `ADMIN_KEY`, which belongs to

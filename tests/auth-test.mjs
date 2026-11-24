@@ -8,6 +8,7 @@ import {
 } from '../lib/password.mjs';
 import { newAgentToken, validAgentName, SCOPES } from '../lib/agent-token.mjs';
 import { newWebhookSecret, validWebhookUrl, sign, verifySignature } from '../lib/webhook-sign.mjs';
+import { validateItem, decisionRefusal, findContactDetail, newLogId } from '../lib/tracker.mjs';
 
 let pass = 0, fail = 0;
 const t = async (name, fn) => {
@@ -192,6 +193,60 @@ await t('webhook URLs cannot point inward', () => {
   ]) {
     assert.ok(!validWebhookUrl(bad), `${JSON.stringify(bad)} should be refused`);
   }
+});
+
+await t('the plan refuses what it cannot interpret', () => {
+  assert.strictEqual(validateItem('status', { title: 'x', lane: 'now' }), null);
+  assert.strictEqual(validateItem('status', { title: 'x', lane: 'nowish' }).field, 'lane');
+  assert.strictEqual(validateItem('status', { lane: 'now' }).field, 'title');
+  assert.strictEqual(validateItem('status', { title: 'x', lane: 'now', nope: 1 }).field, 'nope');
+  assert.strictEqual(validateItem('milestone', { title: 'x', date: 'soon' }).field, 'date');
+  assert.strictEqual(validateItem('decision', { title: 'x', state: 'decided', ref: 'http://x.com' }).field, 'ref');
+  assert.strictEqual(validateItem('log', { text: 'y'.repeat(1201) }).field, 'text');
+  assert.strictEqual(validateItem('actual', { as_of: '2026-11-30' }).field, 'source');
+});
+
+await t('an actual is keyed by the metrics its board declares', () => {
+  const keys = ['contacted', 'enrolled'];
+  const ok = { as_of: '2026-11-30', source: 'CRM', values: { contacted: 400, enrolled: null } };
+  assert.strictEqual(validateItem('actual', ok, { metricKeys: keys }), null);
+  // This is what stops the app being tied to one funnel: a board that does not track a
+  // metric cannot have numbers filed under it.
+  const wrong = { as_of: '2026-11-30', source: 'CRM', values: { installs: 10 } };
+  assert.strictEqual(validateItem('actual', wrong, { metricKeys: keys }).field, 'values.installs');
+  const nan = { as_of: '2026-11-30', source: 'CRM', values: { contacted: 'lots' } };
+  assert.strictEqual(validateItem('actual', nan, { metricKeys: keys }).field, 'values.contacted');
+});
+
+await t('contact details are refused wherever they appear', () => {
+  assert.ok(findContactDetail('write to me at adi@example.com'));
+  assert.ok(findContactDetail('call 9876543210 tomorrow'));
+  assert.ok(!findContactDetail('about 1,100 contacted by May'));
+  assert.ok(!findContactDetail('ref D-07, decided 22 Oct'));
+  const bad = validateItem('status', { title: 'x', lane: 'now', detail: 'ping adi@example.com' });
+  assert.strictEqual(bad.field, 'detail');
+});
+
+await t('an agent may propose a decision and never settle one', () => {
+  const agent = { agent: { id: 1, name: 'grok' } };
+  const member = { person: { id: 2, display_name: 'Akshay', is_master: false } };
+  const master = { person: { id: 3, display_name: 'Adi', is_master: true } };
+  const key = { admin: true };
+  assert.strictEqual(decisionRefusal('decision', { state: 'proposed' }, agent), null);
+  assert.ok(decisionRefusal('decision', { state: 'decided' }, agent));
+  assert.ok(decisionRefusal('decision', { state: 'superseded' }, agent));
+  assert.ok(decisionRefusal('decision', { state: 'decided' }, member));
+  assert.strictEqual(decisionRefusal('decision', { state: 'decided' }, master), null);
+  assert.strictEqual(decisionRefusal('decision', { state: 'decided' }, key), null);
+  // Only decisions are policed; a status moving to done is nobody's permission question.
+  assert.strictEqual(decisionRefusal('status', { lane: 'done' }, agent), null);
+});
+
+await t('log ids sort by when they were made', () => {
+  const a = newLogId(1000000, () => 0.1);
+  const b = newLogId(2000000, () => 0.1);
+  assert.ok(a < b, `${a} should sort before ${b}`);
+  assert.notStrictEqual(newLogId(1000000, () => 0.1), newLogId(1000000, () => 0.9));
 });
 
 console.log(`\npassed ${pass}, failed ${fail}`);

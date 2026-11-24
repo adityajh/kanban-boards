@@ -201,6 +201,7 @@ export default function Board({ slug }) {
         <button className={'linkbtn' + (showAgent ? ' on' : '')}
           title="Show cards agents created for themselves"
           onClick={() => setShowAgent(v => !v)}>{showAgent ? 'hide agent work' : 'show agent work'}</button>
+        {cfg.plan && <a className="linkbtn" href={'/' + slug + '/plan'}>plan</a>}
         <a className="linkbtn" href={'/' + slug + '/settings'}>settings</a>
         <button className="linkbtn" onClick={signOut}>sign out</button>
       </div>

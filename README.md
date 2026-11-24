@@ -6,6 +6,7 @@ username and password; agents keep using the board passphrase. Next.js on Vercel
 Neon Postgres. Started life as the Inditress board.
 
 - Live: https://board-iota-nine.vercel.app/<slug> (Vercel project `board`)
+- Plan: `/<slug>/plan` — the board's second surface, on boards whose config declares one
 - Board settings: `/<slug>/settings` (your password; and for board admins, board look-and-feel and people)
 - Admin overview: `/admin` (all boards, Review queue, stuck and stalled cards, recent notes, create a board)
 - API reference: [API.md](API.md)
@@ -70,6 +71,8 @@ account on no boards can never be reached or removed again.
 - `lib/tenant.js`: tenant resolution, route wrappers (`withTenant`, `withUser`, `withAdmin`), audience rules, config normalisation
 - `lib/agents.js` + `lib/agent-token.mjs`: per-agent identities · `lib/events.js`: the append-only log
 - `lib/webhooks.js` + `lib/webhook-sign.mjs`: waking an agent, signed, best-effort over the feed
+- `lib/plan.js` + `lib/tracker.mjs`: the Plan — six kinds, their rules, and the metric set a board declares
+- `components/Plan.js`: the Plan page, rendered from the board's own config
 - `lib/auth.js`: sessions and membership lookups · `lib/people.js`: board rosters
 - `lib/password.mjs`: scrypt hashing, cookies (pure, no imports, unit-tested)
 - `lib/http.js`: JSON/CORS helpers · `tests/`: `auth-test.mjs` (no DB) and `isolation-test.sh` (live)

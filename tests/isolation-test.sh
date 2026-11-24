@@ -414,6 +414,79 @@ curl -s -o /dev/null -X POST -H "$AGH" -H "$CT" $B/api/cards/$A_CARD/notes -d '{
 check "and picks up what happens after it" True "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$CUR" | jget "any(e['verb']=='note.added' for e in d['events'])")"
 check "another board cannot read this log" True "$(curl -s -H "$IND" "$B/api/events?limit=200" | jget "all(e['actor']['name']!='zz-test-agent' for e in d['events'])")"
 
+echo "== the plan"
+# The plan is per board and off unless the board declares one, so the suite turns it on for
+# jbj, exercises it, and the cleanup block puts jbj's config back as it found it.
+PLANCFG='{"config":{"plan":{"title":"ZZ Test Plan","goal":{"number":20,"unit":"things","by":"2027-07-31"},"metrics":[{"key":"contacted","label":"Contacted","target":1100},{"key":"enrolled","label":"Enrolled","target":20}],"periods":[{"id":"2026-11","label":"Nov 2026","targets":{"contacted":400,"enrolled":0}}]}}}'
+NOPLAN='{"config":{"plan":null}}'
+check "plan config is valid json" OK "$(printf '%s' "$PLANCFG$NOPLAN" | python3 -c 'import sys;print("OK")')"
+
+check "a board without a plan has no tracker" 404 "$(code -H "$IND" $B/api/tracker)"
+check "a board admin cannot set the plan" 403 "$(code -X PATCH -b $JAR -H "$JT" -H "$CT" $B/api/settings -d "$PLANCFG")"
+check "the admin key can" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d "$PLANCFG")"
+check "and the tracker opens" "ZZ Test Plan" "$(curl -s -H "$AGH" $B/api/tracker | jget 'd["plan"]["title"]')"
+check "it comes back grouped by kind" True "$(curl -s -H "$AGH" $B/api/tracker | jget "sorted(d['items'].keys()) == ['actual','decision','log','milestone','risk','status']")"
+
+echo "-- rows, versions and merges"
+ST='{"title":"ZZ status","lane":"now","owner":"Adi","as_of":"2026-11-24"}'
+ST2='{"title":"ZZ status moved","lane":"waiting","version":1}'
+ST_STALE='{"title":"ZZ stale","lane":"done","version":1}'
+check "status bodies are valid json" OK "$(printf '%s' "$ST$ST2$ST_STALE" | python3 -c 'import sys;print("OK")')"
+check "a status row is created" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-one -d "$ST")"
+check "it is attributed to the agent" zz-test-agent "$(curl -s -H "$AGH" $B/api/tracker/status/zz-one | jget 'd["updatedBy"]')"
+check "the right version replaces it" 200 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-one -d "$ST2")"
+check "a stale version is refused" 409 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-one -d "$ST_STALE")"
+check "and the 409 hands back the current row" True "$(curl -s -o /dev/null -w '' -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-one -d "$ST_STALE"; curl -s -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-one -d "$ST_STALE" | jget "'item' in d and d['item']['lane']=='waiting'")"
+check "a patch merges rather than replaces" waiting "$(curl -s -X PATCH -H "$AGH" -H "$CT" $B/api/tracker/status/zz-one -d '{"owner":"Akshay"}' | jget 'd["lane"]')"
+check "and applies the change" Akshay "$(curl -s -H "$AGH" $B/api/tracker/status/zz-one | jget 'd["owner"]')"
+
+echo "-- what the plan refuses"
+check "an unknown lane is 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-bad -d '{"title":"x","lane":"sideways"}')"
+check "a missing title is 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-bad -d '{"lane":"now"}')"
+check "an unknown field is 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-bad -d '{"title":"x","lane":"now","colour":"red"}')"
+check "the 422 names the field" lane "$(curl -s -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-bad -d '{"title":"x","lane":"sideways"}' | jget 'd["field"]')"
+PII='{"title":"x","lane":"now","detail":"email adi@example.com"}'
+check "an email address is 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/status/zz-bad -d "$PII")"
+check "an unknown kind is 404" 404 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/sausage/zz-bad -d '{"title":"x"}')"
+
+echo "-- actuals are keyed by the metrics this board declares"
+ACT='{"as_of":"2026-11-30","source":"ZZ test","values":{"contacted":400,"enrolled":0}}'
+ACT_FLAT='{"as_of":"2026-12-31","source":"ZZ test","contacted":650,"enrolled":2}'
+ACT_WRONG='{"as_of":"2026-11-30","source":"ZZ test","values":{"installs":10}}'
+check "actual bodies are valid json" OK "$(printf '%s' "$ACT$ACT_FLAT$ACT_WRONG" | python3 -c 'import sys;print("OK")')"
+check "an actual is written" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/actual/2026-11 -d "$ACT")"
+check "a metric this board does not track is 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/actual/2026-11 -d "$ACT_WRONG")"
+check "an actual with no source is 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/actual/2026-10 -d '{"as_of":"2026-10-31"}')"
+check "flat metric fields are folded into values" 650 "$(curl -s -X PUT -H "$AGH" -H "$CT" $B/api/tracker/actual/2026-12 -d "$ACT_FLAT" | jget 'd["values"]["contacted"]')"
+
+echo "-- only a master admin settles a decision"
+PROP='{"title":"ZZ decision","state":"proposed","owner":"Adi","date":"2026-11-24"}'
+DEC='{"title":"ZZ decision","state":"decided","owner":"Adi","date":"2026-11-24","version":1}'
+check "decision bodies are valid json" OK "$(printf '%s' "$PROP$DEC" | python3 -c 'import sys;print("OK")')"
+check "an agent may propose" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/decision/ZZ-01 -d "$PROP")"
+check "an agent may not decide" 403 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/decision/ZZ-01 -d "$DEC")"
+check "a board member may not decide" 403 "$(code -X PUT -b $JAR -H "$JT" -H "$CT" $B/api/tracker/decision/ZZ-01 -d "$DEC")"
+check "the admin key may" 200 "$(code -X PUT -H "$ADM" -H "$JT" -H "$CT" $B/api/tracker/decision/ZZ-01 -d "$DEC")"
+check "and it reads back decided" decided "$(curl -s -H "$AGH" $B/api/tracker/decision/ZZ-01 | jget 'd["state"]')"
+
+echo "-- the log signs itself"
+check "a log entry is appended" 201 "$(code -X POST -H "$AGH" -H "$CT" $B/api/tracker/log -d '{"kind":"update","text":"ZZ did a thing"}')"
+check "signed with the caller, not the body" zz-test-agent "$(curl -s -X POST -H "$AGH" -H "$CT" $B/api/tracker/log -d '{"text":"ZZ again","by":"Adi"}' | jget 'd["by"]')"
+check "an empty log entry is 422" 422 "$(code -X POST -H "$AGH" -H "$CT" $B/api/tracker/log -d '{"text":"   "}')"
+check "plan writes reach the event log" True "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?limit=200" | jget "any(e['verb'].startswith('tracker.') for e in d['events'])")"
+check "another board sees none of this" 404 "$(code -H "$IND" $B/api/tracker/status/zz-one)"
+
+echo "-- plan cleanup"
+for K in status/zz-one actual/2026-11 actual/2026-12 decision/ZZ-01; do
+  curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/tracker/$K
+done
+for L in $(curl -s -H "$ADM" -H "$JT" $B/api/tracker/log | jget "' '.join(x['id'] for x in d)"); do
+  curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/tracker/log/$L
+done
+check "the plan is emptied" 0 "$(curl -s -H "$ADM" -H "$JT" $B/api/tracker | jget "sum(len(v) for v in d['items'].values())")"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d "$NOPLAN"
+check "and switched back off" 404 "$(code -H "$AGH" $B/api/tracker)"
+
 echo "-- being woken instead of polling"
 HOOK_OK='{"webhookUrl":"https://example.com/wake","webhookVerbs":["card.moved","note.added"]}'
 HOOK_HTTP='{"webhookUrl":"http://example.com/wake"}'
