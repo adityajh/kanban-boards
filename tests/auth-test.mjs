@@ -7,6 +7,7 @@ import {
   readCookie, clearSessionCookie, MIN_PASSWORD, publicPerson, SESSION_COOKIE,
 } from '../lib/password.mjs';
 import { newAgentToken, validAgentName, SCOPES } from '../lib/agent-token.mjs';
+import { newWebhookSecret, validWebhookUrl, sign, verifySignature } from '../lib/webhook-sign.mjs';
 
 let pass = 0, fail = 0;
 const t = async (name, fn) => {
@@ -165,6 +166,32 @@ await t('agent names stay token-like', () => {
 
 await t('scopes are exactly read and write', () => {
   assert.deepStrictEqual([...SCOPES].sort(), ['read', 'write']);
+});
+
+await t('a webhook signature verifies, and a tampered body does not', () => {
+  const secret = newWebhookSecret();
+  const body = JSON.stringify({ id: 7, verb: 'card.moved' });
+  const h = sign(secret, body);
+  assert.ok(h.startsWith('sha256='), 'signature should name its algorithm');
+  assert.ok(verifySignature(secret, body, h), 'the real body must verify');
+  assert.ok(!verifySignature(secret, body + ' ', h), 'a changed body must not verify');
+  assert.ok(!verifySignature(newWebhookSecret(), body, h), 'another secret must not verify');
+  assert.ok(!verifySignature(secret, body, ''), 'an absent signature must not verify');
+});
+
+await t('webhook URLs cannot point inward', () => {
+  for (const ok of ['https://example.com/hook', 'https://a.b.co.uk/x?y=1', 'https://1.2.3.4/h']) {
+    assert.ok(validWebhookUrl(ok), `${ok} should be allowed`);
+  }
+  // The board makes this request itself, so an address that resolves to the machine or to
+  // a private network turns an agent's config into server-side request forgery.
+  for (const bad of [
+    'http://example.com/hook', 'https://localhost/h', 'https://127.0.0.1/h',
+    'https://10.0.0.5/h', 'https://192.168.1.1/h', 'https://169.254.169.254/latest/meta-data',
+    'https://172.16.0.1/h', 'ftp://example.com', 'not a url', '',
+  ]) {
+    assert.ok(!validWebhookUrl(bad), `${JSON.stringify(bad)} should be refused`);
+  }
 });
 
 console.log(`\npassed ${pass}, failed ${fail}`);

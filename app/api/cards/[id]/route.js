@@ -48,10 +48,10 @@ export const PATCH = withTenant(async (req, { params }, t, c) => {
   if (!card) return json({ error: 'not found' }, 404);
   // A column change is the event worth reading in a feed; everything else is an edit.
   if (card.status !== before.status) {
-    await logEvent(c, t.id, 'card.moved', 'card', card.id,
+    await logEvent(c, t, 'card.moved', 'card', card.id,
       { from: before.status, to: card.status, title: card.title });
   } else {
-    await logEvent(c, t.id, 'card.updated', 'card', card.id, { title: card.title });
+    await logEvent(c, t, 'card.updated', 'card', card.id, { title: card.title });
   }
   return json(clean(card));
 });
@@ -62,6 +62,6 @@ export const DELETE = withTenant(async (req, { params }, t, c) => {
     where id=${id} and tenant_id=${t.id} and audience = any(${visibleAudiences(c)}::text[])
     returning id, title` : [];
   if (!gone) return json({ error: 'not found' }, 404);
-  await logEvent(c, t.id, 'card.deleted', 'card', gone.id, { title: gone.title });
+  await logEvent(c, t, 'card.deleted', 'card', gone.id, { title: gone.title });
   return json({ ok: true });
 });

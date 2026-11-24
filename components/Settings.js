@@ -367,6 +367,9 @@ function Agents({ api }) {
   const [scope, setScope] = useState('write');
   const [issued, setIssued] = useState(null);
   const [confirmGone, setConfirmGone] = useState(null);
+  const [hookFor, setHookFor] = useState(null);   // agent id whose webhook is being edited
+  const [hookUrl, setHookUrl] = useState('');
+  const [hookVerbs, setHookVerbs] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -399,6 +402,21 @@ function Agents({ api }) {
   });
 
   const toggle = (a) => run(() => api('/settings/agents/' + a.id, 'PATCH', { disabled: !a.disabled }));
+
+  const openHook = (a) => {
+    setHookFor(a.id);
+    setHookUrl(a.webhookUrl || '');
+    setHookVerbs((a.webhookVerbs || []).join(', '));
+  };
+  const saveHook = (a) => run(async () => {
+    const verbs = hookVerbs.split(',').map(v => v.trim()).filter(Boolean);
+    const d = await api('/settings/agents/' + a.id, 'PATCH', {
+      webhookUrl: hookUrl.trim() || null,
+      webhookVerbs: verbs,
+    });
+    if (d.webhookSecret) setIssued({ name: d.agent.name, secret: d.webhookSecret });
+    setHookFor(null);
+  });
   const setScopeOf = (a, v) => run(() => api('/settings/agents/' + a.id, 'PATCH', { scope: v }));
   const remove = (a) => run(async () => {
     await api('/settings/agents/' + a.id, 'DELETE');
@@ -423,7 +441,7 @@ function Agents({ api }) {
         {list.length > 0 && (
           <div className="ascroll">
             <table className="atable">
-              <thead><tr><th>Name</th><th>Scope</th><th>Last seen</th><th>State</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>Scope</th><th>Last seen</th><th>Wake</th><th>State</th><th></th></tr></thead>
               <tbody>
                 {list.map(a => (
                   <tr key={a.id}>
@@ -436,8 +454,22 @@ function Agents({ api }) {
                       </select>
                     </td>
                     <td>{a.lastSeenAt ? timeAgo(a.lastSeenAt) : 'never'}</td>
+                    <td>
+                      {a.webhookUrl ? (
+                        <>
+                          <span className="pill">webhook</span>
+                          {a.lastDeliveryStatus && (
+                            <span className={'sub' + (/^2/.test(a.lastDeliveryStatus) ? '' : ' hot')}>
+                              last {a.lastDeliveryStatus}
+                              {a.lastDeliveryAt ? ' · ' + timeAgo(a.lastDeliveryAt) : ''}
+                            </span>
+                          )}
+                        </>
+                      ) : <span className="sub">reads the feed</span>}
+                    </td>
                     <td className={a.disabled ? '' : 'hot'}>{a.disabled ? 'disabled' : 'active'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="linkbtn" disabled={busy} onClick={() => openHook(a)}>wake</button>{' '}
                       <button className="linkbtn" disabled={busy} onClick={() => rotate(a)}>rotate</button>{' '}
                       <button className="linkbtn" disabled={busy} onClick={() => toggle(a)}>
                         {a.disabled ? 'enable' : 'disable'}
@@ -459,7 +491,45 @@ function Agents({ api }) {
           </div>
         )}
 
-        {issued && (
+        {hookFor != null && (() => {
+          const a = list.find(x => x.id === hookFor);
+          if (!a) return null;
+          return (
+            <div className="created">
+              <h4 style={{ margin: '0 0 6px' }}>Wake <code>{a.name}</code></h4>
+              <p className="hint" style={{ margin: '0 0 10px' }}>
+                An https address we POST each matching event to, signed with a secret shown
+                once here. Leave the verbs empty to be woken by everything. Delivery is one
+                attempt with no retry — the event feed is what catches anything missed.
+              </p>
+              <div className="aform">
+                <label>Webhook URL<input value={hookUrl} placeholder="https://…"
+                  onChange={e => setHookUrl(e.target.value)} /></label>
+                <label>Verbs (comma separated, blank = all)<input value={hookVerbs}
+                  placeholder="card.moved, note.added"
+                  onChange={e => setHookVerbs(e.target.value)} /></label>
+                <button className="btn" disabled={busy} onClick={() => saveHook(a)}>Save</button>
+                <button className="btn ghost" onClick={() => setHookFor(null)}>Cancel</button>
+              </div>
+            </div>
+          );
+        })()}
+
+        {issued && issued.secret && (
+          <div className="created">
+            Signing secret for <b>{issued.name}</b>: <code>{issued.secret}</code>
+            <div className="hint" style={{ margin: '6px 0 0' }}>
+              Shown once. Each delivery carries <code>X-Board-Signature: sha256=…</code>, an
+              HMAC of the body with this secret — the receiver checks it to know the call
+              came from the board.
+            </div>
+            <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setIssued(null)}>
+              Done
+            </button>
+          </div>
+        )}
+
+        {issued && issued.token && (
           <div className="created">
             Token for <b>{issued.name}</b>{issued.rotated ? ' (rotated — the old one stopped working)' : ''}:{' '}
             <code>{issued.token}</code>

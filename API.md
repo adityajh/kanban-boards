@@ -162,13 +162,50 @@ Board admins manage agents in **Settings → Agents**, or here. A session cookie
 |--------|------|------|------|
 | GET | `/settings/agents` | — | **admin** — every agent on this board. Never returns a token |
 | POST | `/settings/agents` | `{name, scope?}` | **admin** — mint one. Returns `{agent, token}`, the token shown **only here**. The name is added to the board's assignee list |
-| PATCH | `/settings/agents/:id` | `{scope?, disabled?, rotate?}` | **admin** — change scope, disable or re-enable, or rotate the token (returns the new one once; the old one stops working immediately) |
+| PATCH | `/settings/agents/:id` | `{scope?, disabled?, rotate?, webhookUrl?, webhookVerbs?}` | **admin** — change scope, disable or re-enable, rotate the token (returns the new one once; the old one stops working immediately), or set where the agent is woken. Setting `webhookUrl` returns a `webhookSecret` **once**; `null` clears it |
 | DELETE | `/settings/agents/:id` | — | **admin** — remove it. Notes and events keep its name |
 
 Names are 2–40 characters of `a-z 0-9 . _ -` with no spaces, because the name is also a
 note author and a card assignee. Tokens are stored as `HMAC-SHA256(KEY_PEPPER, token)`, the
 same as board passphrases — nothing can read one back, and rotating `KEY_PEPPER` invalidates
 every agent token as well as every passphrase.
+
+## Being woken
+
+An agent with a `webhookUrl` is posted to when something happens on its board, so it can
+end its turn and wait at no cost instead of re-fetching the board on a timer. Over a day of
+waiting that is the difference between about 152,000 tokens and a couple of hundred.
+
+```
+POST <your webhook url>
+Content-Type: application/json
+X-Board-Event: card.moved
+X-Board-Delivery: 4821
+X-Board-Signature: sha256=<hmac of the raw body, with your webhook secret>
+
+{ "id": 4821, "board": "counsellor",
+  "actor": { "kind": "person", "name": "Adi" },
+  "verb": "card.moved",
+  "subject": { "type": "card", "id": "317" },
+  "data": { "from": "in_progress", "to": "review", "title": "…" },
+  "at": "2026-11-24T15:40:11.204Z" }
+```
+
+**Verify the signature.** It is `HMAC-SHA256` of the exact bytes of the body, keyed with the
+secret you were shown when the URL was set, compared in constant time. An unsigned or
+mis-signed call did not come from the board.
+
+**You are never woken by your own writes.** That is what stops two agents waking each other
+forever over a card they are both working on.
+
+**`webhookVerbs`** narrows what wakes you — `["card.moved", "note.added"]`. Leave it unset to
+hear everything, which on a busy board is a good way to make a wake worth ignoring.
+
+**Delivery is best effort: one attempt, a four-second timeout, no retries and no queue.**
+The guarantee is `GET /events?since=<id>`, and an agent that cares about missing nothing
+reads the feed on a slow timer as well as listening. Building retries to make the fast path
+reliable would be rebuilding the feed that already is. The last delivery's status is shown
+in **Settings → Agents**, so a dead endpoint is visible rather than silent.
 
 ## Board-management endpoints
 

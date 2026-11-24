@@ -414,6 +414,26 @@ curl -s -o /dev/null -X POST -H "$AGH" -H "$CT" $B/api/cards/$A_CARD/notes -d '{
 check "and picks up what happens after it" True "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$CUR" | jget "any(e['verb']=='note.added' for e in d['events'])")"
 check "another board cannot read this log" True "$(curl -s -H "$IND" "$B/api/events?limit=200" | jget "all(e['actor']['name']!='zz-test-agent' for e in d['events'])")"
 
+echo "-- being woken instead of polling"
+HOOK_OK='{"webhookUrl":"https://example.com/wake","webhookVerbs":["card.moved","note.added"]}'
+HOOK_HTTP='{"webhookUrl":"http://example.com/wake"}'
+HOOK_LOCAL='{"webhookUrl":"https://127.0.0.1/wake"}'
+HOOK_META='{"webhookUrl":"https://169.254.169.254/latest/meta-data"}'
+check "webhook bodies are valid json" OK "$(printf '%s' "$HOOK_OK$HOOK_HTTP$HOOK_LOCAL$HOOK_META" | python3 -c 'import sys;print("OK")')"
+WH=$(curl -s -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d "$HOOK_OK")
+check "a webhook can be set" "https://example.com/wake" "$(echo "$WH" | jget 'd.get("agent",{}).get("webhookUrl","")')"
+check "and a signing secret comes back once" True "$(echo "$WH" | jget "str(d.get('webhookSecret','')).startswith('whsec_')")"
+check "the verbs are kept" "['card.moved', 'note.added']" "$(echo "$WH" | jget 'd["agent"]["webhookVerbs"]')"
+check "the secret is never listed again" False "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "any('webhookSecret' in a or 'secret' in str(a) for a in d)")"
+# The board makes this request itself, so an inward address would turn an agent's config
+# into server-side request forgery.
+check "plain http is refused" 400 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d "$HOOK_HTTP")"
+check "loopback is refused" 400 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d "$HOOK_LOCAL")"
+check "the cloud metadata address is refused" 400 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d "$HOOK_META")"
+check "a refused url leaves the old one in place" "https://example.com/wake" "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "[a for a in d if a['id']==$AG_ID][0]['webhookUrl']")"
+check "an agent cannot set its own webhook" 403 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/settings/agents/$AG_ID -d "$HOOK_OK")"
+check "clearing it falls back to the feed" None "$(curl -s -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"webhookUrl":null}' | jget 'd["agent"]["webhookUrl"]')"
+
 echo "-- agent cleanup"
 curl -s -o /dev/null -X DELETE -H "$AGH" $B/api/docs/zz/brief
 curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$A_CARD

@@ -179,3 +179,5 @@ a.linkbtn{text-decoration:none;display:inline-block}
 .pill.late{color:#9B3B2E;border-color:#9B3B2E}
 .pill.agentpill{color:var(--accent);border-color:var(--accent);opacity:.8}
 .linkbtn.on{color:var(--accent)}
+.atable .sub{display:block;font-size:11px;color:var(--ink-40)}
+.atable .sub.hot{color:#9B3B2E}

@@ -18,6 +18,6 @@ export const POST = withTenant(async (req, { params }, t, c) => {
   const [nt] = await sql`insert into notes (card_id, author, body)
     values (${cardId}, ${author}, ${b.body}) returning *`;
   await sql`update cards set updated_at=now() where id=${cardId}`;
-  await logEvent(c, t.id, 'note.added', 'note', nt.id, { card_id: cardId });
+  await logEvent(c, t, 'note.added', 'note', nt.id, { card_id: cardId });
   return json(nt, 201);
 });

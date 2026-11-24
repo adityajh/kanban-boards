@@ -56,6 +56,6 @@ export const POST = withTenant(async (req, ctx, t, c) => {
     values (${t.id}, ${b.title}, ${b.description || ''}, ${status},
             ${assignee}, ${b.tag || ''}, ${Number(max) + 1}, ${audience}, ${b.due_at || null})
     returning *`;
-  await logEvent(c, t.id, 'card.created', 'card', card.id, { title: card.title, status, audience });
+  await logEvent(c, t, 'card.created', 'card', card.id, { title: card.title, status, audience });
   return json({ ...clean(card), subtasks: [], links: [], notes: [] }, 201);
 });

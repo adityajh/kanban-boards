@@ -69,6 +69,7 @@ account on no boards can never be reached or removed again.
 - `app/[slug]/settings/page.js` + `components/Settings.js`: per-board settings
 - `lib/tenant.js`: tenant resolution, route wrappers (`withTenant`, `withUser`, `withAdmin`), audience rules, config normalisation
 - `lib/agents.js` + `lib/agent-token.mjs`: per-agent identities · `lib/events.js`: the append-only log
+- `lib/webhooks.js` + `lib/webhook-sign.mjs`: waking an agent, signed, best-effort over the feed
 - `lib/auth.js`: sessions and membership lookups · `lib/people.js`: board rosters
 - `lib/password.mjs`: scrypt hashing, cookies (pure, no imports, unit-tested)
 - `lib/http.js`: JSON/CORS helpers · `tests/`: `auth-test.mjs` (no DB) and `isolation-test.sh` (live)

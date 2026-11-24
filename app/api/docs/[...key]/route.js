@@ -73,13 +73,13 @@ export const PUT = withTenant(async (req, { params }, t, c) => {
         updated_by = ${whoami(c)},
         updated_at = now()
       where id=${existing.id} returning *`;
-    await logEvent(c, t.id, 'doc.updated', 'doc', doc.key, { version: doc.version });
+    await logEvent(c, t, 'doc.updated', 'doc', doc.key, { version: doc.version });
     return json(publicDoc(doc));
   }
 
   const [doc] = await sql`insert into documents (tenant_id, key, title, body, audience, updated_by)
     values (${t.id}, ${key}, ${b.title || key}, ${body}, ${audience}, ${whoami(c)}) returning *`;
-  await logEvent(c, t.id, 'doc.created', 'doc', doc.key, { title: doc.title });
+  await logEvent(c, t, 'doc.created', 'doc', doc.key, { title: doc.title });
   return json(publicDoc(doc), 201);
 });
 
@@ -113,7 +113,7 @@ export const POST = withTenant(async (req, { params }, t, c) => {
     const [doc] = await sql`insert into documents (tenant_id, key, title, body, audience, updated_by)
       values (${t.id}, ${key}, ${b.title || key}, ${stamp.trimStart() + block}, ${audience}, ${whoami(c)})
       returning *`;
-    await logEvent(c, t.id, 'doc.appended', 'doc', doc.key, { created: true });
+    await logEvent(c, t, 'doc.appended', 'doc', doc.key, { created: true });
     return json(publicDoc(doc), 201);
   }
 
@@ -128,7 +128,7 @@ export const POST = withTenant(async (req, { params }, t, c) => {
       updated_by = ${whoami(c)},
       updated_at = now()
     where id=${existing.id} returning *`;
-  await logEvent(c, t.id, 'doc.appended', 'doc', doc.key, { version: doc.version });
+  await logEvent(c, t, 'doc.appended', 'doc', doc.key, { version: doc.version });
   return json(publicDoc(doc));
 });
 
@@ -139,6 +139,6 @@ export const DELETE = withTenant(async (req, { params }, t, c) => {
       and audience = any(${visibleAudiences(c)}::text[])
     returning key`;
   if (!gone) return json({ error: 'not found' }, 404);
-  await logEvent(c, t.id, 'doc.deleted', 'doc', gone.key, {});
+  await logEvent(c, t, 'doc.deleted', 'doc', gone.key, {});
   return json({ ok: true });
 });
