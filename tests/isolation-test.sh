@@ -64,7 +64,19 @@ check "tenant key cannot use admin API" 401 "$(code -H "$IND" $B/api/admin/overv
 
 echo "== inditress data intact"
 IC=$(curl -s -H "$IND" $B/api/cards)
-check "inditress card count" "${EXPECT_IND_CARDS:-16}" "$(echo "$IC" | jget 'len(d)')"
+IND_N=$(echo "$IC" | jget 'len(d)')
+# How many cards this board holds is whatever Adi's real board holds, and it goes up
+# whenever somebody adds one. A fixed number here fails for the wrong reason the first time
+# that happens — which it did: the board gained a card on 29 September and this line has
+# been wrong against production ever since, while still passing against dev. A check whose
+# name says "intact" must not break on ordinary use, or people learn to ignore it.
+#
+# What is worth asserting is that the board is not empty, and that nothing below CHANGES
+# it. The count captured here is what the post-attack check compares against.
+check "inditress has cards" True "$([ "${IND_N:-0}" -gt 0 ] && echo True || echo False)"
+if [ -n "$EXPECT_IND_CARDS" ]; then
+  check "inditress card count is exactly $EXPECT_IND_CARDS" "$EXPECT_IND_CARDS" "$IND_N"
+fi
 check "no tenant_id leaked in cards" False "$(echo "$IC" | jget '"tenant_id" in d[0]')"
 check "inditress resources" 3 "$(curl -s -H "$IND" $B/api/resources | jget 'len(d)')"
 IND_CARD=$(echo "$IC" | jget '[c for c in d if c["subtasks"] and c["links"] and c["notes"]][0]["id"]')
@@ -107,7 +119,7 @@ check "garbage id -> 404" 404 "$(code -H "$JBJ" $B/api/cards/abc)"
 
 echo "== inditress unchanged after attacks"
 IC2=$(curl -s -H "$IND" $B/api/cards)
-check "same card count" "${EXPECT_IND_CARDS:-16}" "$(echo "$IC2" | jget 'len(d)')"
+check "same card count as before the attacks" "$IND_N" "$(echo "$IC2" | jget 'len(d)')"
 check "same data" "$(echo "$IC" | python3 -c 'import sys,hashlib;print(hashlib.md5(sys.stdin.read().encode()).hexdigest())')" "$(echo "$IC2" | python3 -c 'import sys,hashlib;print(hashlib.md5(sys.stdin.read().encode()).hexdigest())')"
 
 echo "== admin"
