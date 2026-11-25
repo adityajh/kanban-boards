@@ -2,7 +2,7 @@ import { sql } from '../../../../lib/db';
 import { json, options, idParam } from '../../../../lib/http';
 import { withTenant, clean, visibleAudiences, AUDIENCES } from '../../../../lib/tenant';
 import { logEvent } from '../../../../lib/events';
-import { statusRefusal, answeredRefusal } from '../../../../lib/cards.mjs';
+import { statusRefusal, answeredRefusal, approvalRefusal, identityName } from '../../../../lib/cards.mjs';
 export const dynamic = 'force-dynamic';
 export async function OPTIONS() { return options(); }
 
@@ -43,6 +43,13 @@ export const PATCH = withTenant(async (req, { params }, t, c) => {
   // here as well; passed through, coalesce would keep the '' and the check constraint would
   // answer 500.
   const nextStatus = b.status || null;
+  // The gate looks at the status the card will END UP in, so an absent status counts as the
+  // card's current one. It only bites when the card is actually arriving in 'done': a card
+  // that is already done and is merely being retitled by a member has not been approved by
+  // that edit, and refusing it would lock ordinary members out of finished cards.
+  const resultStatus = nextStatus || before.status;
+  const gated = resultStatus !== before.status ? approvalRefusal(resultStatus, t, c) : null;
+  if (gated) return json({ error: gated }, 403);
   // A finished card held by a lease nobody will release is a card that looks busy forever,
   // so reaching 'done' drops the claim in the same statement as the move. All three columns
   // go together because the table's check constraint ties the holder to its expiry.
@@ -69,8 +76,14 @@ export const PATCH = withTenant(async (req, { params }, t, c) => {
   const moved = card.status !== before.status;
   const reassigned = card.assignee !== before.assignee;
   if (moved) {
-    await logEvent(c, t, 'card.moved', 'card', card.id,
-      { from: before.status, to: card.status, title: card.title });
+    const data = { from: before.status, to: card.status, title: card.title };
+    // Who allowed it, recorded only on a gated board so every other board's events keep their
+    // shape. The gate has already refused anyone but an admin, so reaching here with the gate
+    // on means an admin did this; ADMIN_KEY belongs to nobody, so it is named as itself.
+    if (t?.config?.reviewGate === true && card.status === 'done') {
+      data.approvedBy = identityName(c) || 'ADMIN_KEY';
+    }
+    await logEvent(c, t, 'card.moved', 'card', card.id, data);
   }
   if (reassigned) {
     await logEvent(c, t, 'card.assigned', 'card', card.id,

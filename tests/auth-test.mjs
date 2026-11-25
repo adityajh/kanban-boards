@@ -11,8 +11,9 @@ import { newWebhookSecret, validWebhookUrl, sign, verifySignature } from '../lib
 import { validateItem, decisionRefusal, findContactDetail, newLogId } from '../lib/tracker.mjs';
 import {
   STATUSES, statusRefusal, sameName, identityName, leaseRefusal, claimState, claimRefusal,
-  addresseeRefusal, answeredRefusal, defaultAudienceFor,
+  addresseeRefusal, answeredRefusal, defaultAudienceFor, approvalRefusal,
 } from '../lib/cards.mjs';
+import { rateLimitRefusal, retryAfterSeconds } from '../lib/ratelimit.mjs';
 import { splitBlocks, hasDiagram } from '../lib/markup.mjs';
 
 let pass = 0, fail = 0;
@@ -439,6 +440,105 @@ await t('a fence of another language stays text', () => {
 await t('hasDiagram is true only when a diagram is present', () => {
   assert.strictEqual(hasDiagram('just words'), false);
   assert.strictEqual(hasDiagram('words\n```mermaid\nA --> B\n```'), true);
+});
+
+console.log('== per-agent write limit');
+await t('an absent limit means "leave it alone", not an error', () => {
+  assert.strictEqual(rateLimitRefusal(undefined), null);
+  assert.strictEqual(rateLimitRefusal(null), null);
+  assert.strictEqual(rateLimitRefusal(''), null);
+});
+await t('a whole number from 1 to 10000 is accepted', () => {
+  for (const n of [1, 120, 10000]) assert.strictEqual(rateLimitRefusal(n), null, String(n));
+});
+await t('anything else is refused, and the refusal names the field', () => {
+  for (const bad of [0, -1, 10001, 1.5, 'five', NaN, Infinity, true, {}]) {
+    const r = rateLimitRefusal(bad);
+    assert.ok(r, `${String(bad)} should be refused`);
+    assert.strictEqual(r.field, 'rateLimit');
+    assert.strictEqual(typeof r.error, 'string');
+  }
+});
+await t('a numeric string is refused rather than coerced', () => {
+  assert.ok(rateLimitRefusal('5'));
+});
+await t('retryAfterSeconds counts down the rest of the minute window', () => {
+  const now = Date.parse('2026-01-01T12:00:00Z');
+  assert.strictEqual(retryAfterSeconds(new Date(now - 10000), now), 50);
+  assert.strictEqual(retryAfterSeconds(new Date(now), now), 60);
+});
+await t('retryAfterSeconds rounds up, and never returns 0', () => {
+  const now = Date.parse('2026-01-01T12:00:00Z');
+  assert.strictEqual(retryAfterSeconds(new Date(now - 59500), now), 1);
+  assert.strictEqual(retryAfterSeconds(new Date(now - 59000), now), 1);
+  assert.strictEqual(retryAfterSeconds(new Date(now - 60000), now), 1);
+  assert.strictEqual(retryAfterSeconds(new Date(now - 10500), now), 50);
+});
+await t('a window that is already over still answers 1', () => {
+  const now = Date.parse('2026-01-01T12:00:00Z');
+  assert.strictEqual(retryAfterSeconds(new Date(now - 120000), now), 1);
+});
+await t('retryAfterSeconds accepts a Date or an ISO string', () => {
+  const now = Date.parse('2026-01-01T12:00:00Z');
+  const start = new Date(now - 10000);
+  assert.strictEqual(retryAfterSeconds(start.toISOString(), now), 50);
+  assert.strictEqual(retryAfterSeconds(start, now), retryAfterSeconds(start.toISOString(), now));
+});
+await t('an unreadable window start answers 1 rather than NaN', () => {
+  assert.strictEqual(retryAfterSeconds('not a date', Date.parse('2026-01-01T12:00:00Z')), 1);
+});
+
+console.log('== approval gate on marking work done');
+const callers = {
+  agent: { agent: { id: 1, name: 'grok' } },
+  masterKey: { admin: true },
+  boardAdmin: { memberAdmin: true },
+  person: { person: { id: 2, display_name: 'X' } },
+  passphrase: {},
+};
+await t('a board that has not opted in never refuses, for any caller', () => {
+  const ungated = [null, undefined, {}, { config: {} }, { config: { reviewGate: false } }];
+  for (const tenant of ungated) {
+    for (const [who, c] of Object.entries(callers)) {
+      for (const status of ['done', 'review', 'todo']) {
+        assert.strictEqual(approvalRefusal(status, tenant, c), null,
+          `${JSON.stringify(tenant)} / ${who} / ${status}`);
+      }
+    }
+  }
+});
+await t('only the boolean true opts in', () => {
+  assert.strictEqual(approvalRefusal('done', { config: { reviewGate: 'true' } }, callers.agent), null);
+  assert.strictEqual(approvalRefusal('done', { config: { reviewGate: 1 } }, callers.agent), null);
+});
+const gated = { config: { reviewGate: true } };
+await t('on a gated board, every status but done is open to everyone', () => {
+  for (const status of ['review', 'todo', 'in_progress', 'stuck']) {
+    for (const [who, c] of Object.entries(callers)) {
+      assert.strictEqual(approvalRefusal(status, gated, c), null, `${who} / ${status}`);
+    }
+  }
+});
+await t('on a gated board, an agent is refused done with a sentence', () => {
+  const r = approvalRefusal('done', gated, callers.agent);
+  assert.strictEqual(typeof r, 'string');
+  assert.ok(r.length > 0);
+});
+await t('on a gated board, the master key and a board admin may mark done', () => {
+  assert.strictEqual(approvalRefusal('done', gated, callers.masterKey), null);
+  assert.strictEqual(approvalRefusal('done', gated, callers.boardAdmin), null);
+});
+await t('on a gated board, a plain person and a passphrase are refused done', () => {
+  assert.strictEqual(typeof approvalRefusal('done', gated, callers.person), 'string');
+  assert.strictEqual(typeof approvalRefusal('done', gated, callers.passphrase), 'string');
+});
+await t('an agent is refused even if it carries an admin flag', () => {
+  assert.strictEqual(typeof approvalRefusal('done', gated, { agent: { name: 'g' }, admin: true }), 'string');
+});
+await t('a missing caller does not throw', () => {
+  assert.doesNotThrow(() => approvalRefusal('done', gated, undefined));
+  assert.strictEqual(typeof approvalRefusal('done', gated, undefined), 'string');
+  assert.strictEqual(approvalRefusal('done', {}, undefined), null);
 });
 
 console.log(`\npassed ${pass}, failed ${fail}`);

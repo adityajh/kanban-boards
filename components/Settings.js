@@ -180,11 +180,16 @@ function BoardSettings({ tenant, api, onSaved }) {
     tags: (cfg.tags || []).join(', '),
     dots: cfg.dots || 0,
     dotsTitle: cfg.dotsTitle || '',
+    // Two settings that describe how this board WORKS rather than how it looks. Both are
+    // off by default, so a board nobody configures behaves exactly as it always has.
+    reviewGate: !!cfg.reviewGate,
+    agentCardsDefault: cfg.agentCardsDefault || 'agent_only',
   });
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
+  const setBool = (k) => (e) => setF(p => ({ ...p, [k]: e.target.checked }));
 
   const submit = async (e) => {
     e.preventDefault();
@@ -197,6 +202,7 @@ function BoardSettings({ tenant, api, onSaved }) {
           brand: f.brand, tagline: f.tagline, accent: f.accent,
           names: asList(f.names), tags: asList(f.tags),
           dots: Number(f.dots) || 0, dotsTitle: f.dotsTitle,
+          reviewGate: f.reviewGate, agentCardsDefault: f.agentCardsDefault,
         },
       });
       setMsg('Saved.');
@@ -226,6 +232,26 @@ function BoardSettings({ tenant, api, onSaved }) {
         <label>Dots (0–8)
           <input type="number" min="0" max="8" value={f.dots} onChange={set('dots')} /></label>
         <label>Dots caption<input value={f.dotsTitle} onChange={set('dotsTitle')} /></label>
+        <label className="wide">An agent's new cards are
+          <select value={f.agentCardsDefault} onChange={set('agentCardsDefault')}>
+            <option value="agent_only">for agents, until one shares it</option>
+            <option value="both">visible to everyone</option>
+          </select>
+          <span className="sub">
+            Keep the first on a board run by people, so agent working notes stay out of the
+            way. Choose the second on a board where almost everything is done by agents,
+            where the first leaves the board looking empty to whoever is watching it.
+          </span>
+        </label>
+        <label className="wide check">
+          <input type="checkbox" checked={f.reviewGate} onChange={setBool('reviewGate')} />
+          A board admin must approve work as done
+          <span className="sub">
+            With this on, only a board admin can move a card to Done — from any column, not
+            just Review, because a gate that only guarded Review could be walked around by
+            skipping it. Agents can still do the work and put it up for approval.
+          </span>
+        </label>
         <button className="btn" disabled={busy}>{busy ? 'Saving…' : 'Save board settings'}</button>
       </form>
     </section>
@@ -418,6 +444,10 @@ function Agents({ api }) {
     setHookFor(null);
   });
   const setScopeOf = (a, v) => run(() => api('/settings/agents/' + a.id, 'PATCH', { scope: v }));
+  // Changing the ceiling also clears the agent's current window server-side, so raising it
+  // for an agent that is being throttled right now takes effect immediately rather than at
+  // the top of the next minute.
+  const setRateOf = (a, v) => run(() => api('/settings/agents/' + a.id, 'PATCH', { rateLimit: v }));
   const remove = (a) => run(async () => {
     await api('/settings/agents/' + a.id, 'DELETE');
     setConfirmGone(null);
@@ -441,7 +471,7 @@ function Agents({ api }) {
         {list.length > 0 && (
           <div className="ascroll">
             <table className="atable">
-              <thead><tr><th>Name</th><th>Scope</th><th>Last seen</th><th>Wake</th><th>State</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>Scope</th><th>Writes/min</th><th>Last seen</th><th>Wake</th><th>State</th><th></th></tr></thead>
               <tbody>
                 {list.map(a => (
                   <tr key={a.id}>
@@ -452,6 +482,26 @@ function Agents({ api }) {
                         <option value="write">read + write</option>
                         <option value="read">read only</option>
                       </select>
+                    </td>
+                    <td>
+                      {/* A ceiling on writes, not on reads: the events feed exists so an
+                          agent need not poll, and throttling that would push it back to
+                          re-fetching the whole board. 120 a minute is far above real work
+                          and far below a runaway retry loop. */}
+                      {/* Keyed on the server's value so the input remounts when that changes:
+                          uncontrolled, it would otherwise keep showing a number the PATCH
+                          rejected, quietly disagreeing with the board. */}
+                      <input type="number" min="1" max="10000" className="num" disabled={busy}
+                        key={a.rateLimit ?? 120}
+                        defaultValue={a.rateLimit ?? 120} aria-label={'Writes per minute for ' + a.name}
+                        onBlur={e => {
+                          const v = Number(e.target.value);
+                          if (!Number.isInteger(v) || v < 1 || v > 10000 || v === (a.rateLimit ?? 120)) {
+                            e.target.value = a.rateLimit ?? 120;
+                            return;
+                          }
+                          setRateOf(a, v);
+                        }} />
                     </td>
                     <td>{a.lastSeenAt ? timeAgo(a.lastSeenAt) : 'never'}</td>
                     <td>

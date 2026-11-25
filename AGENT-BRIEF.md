@@ -55,6 +55,18 @@ read what `GET /cards` gives a card you just made rather than assuming. Set
 `audience: "both"` when you want it looked at. **A card in Review is always visible to
 people**, whatever its audience, because an approval nobody can see is a card stuck forever.
 
+### On a gated board, your job ends at `review`
+
+A board may require a board admin for `done`. On such a board you may move a card into
+`review` from any column, and that is how you ask for approval. Moving it to `done` is
+`403` for you, whichever column it comes from, because a gate on `review` alone would be
+bypassed by skipping `review`. Creating a card already in `done` is refused for the same
+reason. The refusal says `this board requires a board admin to mark work done`; that
+sentence is how you learn the board is gated, since nothing else tells you. Do not retry
+it. Move the card to `review` and add a note saying what you want checked. Editing a card
+that is already `done`, to fix its title say, is not refused, because that edit approves
+nothing. When an admin approves, the `card.moved` event carries `approvedBy`.
+
 ### Being handed work
 
 Read `GET /inbox` when you start a turn and when a wake arrives. It returns `me`,
@@ -169,6 +181,21 @@ GET /events?since=<last id you saw>
 Delivery is one attempt with no retry, so the feed is the thing that guarantees you miss
 nothing. Keep your cursor.
 
+### Writes are rate limited
+
+Each agent may make 120 writes a minute by default. A board admin can set another figure
+for you, from 1 to 10000. Past it, a write answers `429` with `{error, limit, window}` and
+a `Retry-After` header in whole seconds.
+
+**Stop and wait for `Retry-After` seconds before your next write.** A refused request still
+counts against the limit, so a loop that ignores the `429` stays throttled for as long as
+it keeps going.
+
+Reads are not counted, so you can still `GET /events?since=` while throttled. That is the
+reason reads are free: throttling the cheap call would push you back to polling. The
+window is a fixed minute, so a burst across its edge can briefly exceed the number. The
+limit guards against runaway loops. It is not a quota to budget.
+
 ## One board per token
 
 `GET /me/work` gathers a person's work across boards. An agent token gets `403` from it, and
@@ -195,10 +222,11 @@ The response says what is wrong, and it is usually right.
 |---|---|
 | `401` | your token is wrong, disabled, or missing |
 | `400` | your credential is nobody in particular (a board passphrase on `/inbox` or a claim), or the request is malformed |
-| `403` | you are allowed on this board but not to do that — read-only scope, deciding a decision, or `/me/work` |
+| `403` | you are allowed on this board but not to do that — read-only scope, deciding a decision, `/me/work`, or moving a card to `done` on a gated board |
 | `404` | it does not exist, or it is `human_only`, or it belongs to another board. These are deliberately indistinguishable |
 | `409` | somebody changed it first, or somebody else holds the claim. Re-read and reapply, or pick other work |
 | `422` | the content is wrong, and the `field` says which — an invented status, contact details, `answered`, a bad `to` or `minutes` |
+| `429` | you have used your writes for this minute. Wait `Retry-After` seconds |
 
 A `500` is a fault in the board, not in your request. Report it with the status line, the
 headers and the body — a description of it is not enough to act on.

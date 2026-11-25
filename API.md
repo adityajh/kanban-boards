@@ -69,11 +69,11 @@ person's tick (see [Directed work](#directed-work)).
 
 | Method | Path | Body | Does |
 |--------|------|------|------|
-| GET | `/tenant` | — | This board: `{slug, name, config}` (people, tags, brand) |
+| GET | `/tenant` | — | This board: `{slug, name, config}` (people, tags, brand, and the keys under [Board config](#board-config)) |
 | GET | `/cards` | — | All cards with nested subtasks, links, notes. An agent is not served `human_only` rows; when some were withheld the response carries `X-Hidden-Cards: <n>` so a summary is not silently incomplete |
 | GET | `/cards/:id` | — | One card |
-| POST | `/cards` | `{title, status?, assignee?, tag?, description?, audience?, due_at?}` | Create a project. `audience` defaults to `agent_only` for an agent token, unless the board sets `config.agentCardsDefault` to `both`; for anyone else it is `both`. An agent passing `human_only` gets `400`. An agent that sends no `assignee` is assigned the card itself. A `status` outside the five is `422`. A card created already assigned to somebody other than its creator emits `card.assigned` as well as `card.created` |
-| PATCH | `/cards/:id` | any of `{title, description, status, assignee, tag, position, audience, due_at, answered}` | Update (move column = change `status`). An agent cannot set `audience` to `human_only`. A `status` outside the five is `422`. `answered` must be a boolean and an agent that sends it gets `422`. Moving to `done` releases any claim |
+| POST | `/cards` | `{title, status?, assignee?, tag?, description?, audience?, due_at?}` | Create a project. `audience` defaults to `agent_only` for an agent token, unless the board sets `config.agentCardsDefault` to `both`; for anyone else it is `both`. An agent passing `human_only` gets `400`. An agent that sends no `assignee` is assigned the card itself. A `status` outside the five is `422`. A card created already assigned to somebody other than its creator emits `card.assigned` as well as `card.created`. On a board with `config.reviewGate`, `status: "done"` is `403` unless the caller is a board admin (see [The approval gate](#the-approval-gate)) |
+| PATCH | `/cards/:id` | any of `{title, description, status, assignee, tag, position, audience, due_at, answered}` | Update (move column = change `status`). An agent cannot set `audience` to `human_only`. A `status` outside the five is `422`. `answered` must be a boolean and an agent that sends it gets `422`. Moving to `done` releases any claim. On a board with `config.reviewGate`, a change of `status` to `done` is `403` unless the caller is a board admin (see [The approval gate](#the-approval-gate)) |
 | DELETE | `/cards/:id` | — | Delete project + all children |
 | POST | `/cards/:id/subtasks` | `{title}` | Add subtask |
 | PATCH | `/subtasks/:id` | any of `{title, done, position}` | Update / check off / reorder |
@@ -89,6 +89,21 @@ person's tick (see [Directed work](#directed-work)).
 | GET | `/resources` | — | Library: board-level reference links |
 | POST | `/resources` | `{label, url, category?}` | Add a Library link |
 | DELETE | `/resources/:id` | — | Remove a Library link |
+
+## Board config
+
+`GET /tenant` returns it as `config`; a board admin changes it with `PATCH /settings`, which
+merges the keys you send into the existing config. The `plan` key is the exception and is
+master-admin only (see [The Plan](#the-plan)).
+
+| Key | Values | Effect |
+|---|---|---|
+| `agentCardsDefault` | `agent_only` (default), `both` | The `audience` a card gets when an agent creates one without saying. People's cards are always `both` |
+| `reviewGate` | `true` | Only a board admin may bring a card to `done`. Stored only when `true`; any other value leaves the board ungated. See [The approval gate](#the-approval-gate) |
+
+Both are also settable by a board admin on the Settings screen. The config also carries the
+board's brand, tagline, accent, people, tags and dots, described under
+[Settings endpoints](#settings-endpoints).
 
 ## Directed work
 
@@ -199,6 +214,27 @@ An agent token is `403` by design. A token names one board, and widening it here
 a per-board credential into a cross-board one. An agent that works several boards holds one
 token per board and reads each board's `/inbox`.
 
+## The approval gate
+
+A board may set `config.reviewGate` to `true`. Then only a board admin may bring a card to
+`done`. The gate is on **reaching** `done` from any column, not on leaving `review`, because
+a gate that guarded only `review` would be bypassed by skipping it.
+
+| Request | On a gated board |
+|---|---|
+| `PATCH /cards/:id` changing `status` to `done`, from any column | `403` unless the caller is a board admin or the admin key |
+| `POST /cards` with `status: "done"` | `403` on the same terms |
+| `PATCH /cards/:id` to a card already in `done` that leaves `status` as it is, or repeats `done` | allowed. Nothing is being approved |
+| Moving a card into `review`, or out of `done` or `review` to any other column | allowed for everyone. Moving into `review` is how an agent asks for approval |
+
+An agent is always refused, and so is a board passphrase, which names nobody. The `403` body
+is `{error}`. For an agent it reads `this board requires a board admin to mark work done; an
+agent can move a card to review and ask for approval`. That sentence is the only signal that
+a board is gated, so an agent on a gated board treats `review` as the end of its work.
+
+When an admin does move a card to `done`, the `card.moved` event carries `approvedBy` (see
+[Events](#events)).
+
 ## Auth endpoints
 
 Cookie-based, same-origin. Not for agents.
@@ -223,7 +259,7 @@ Board settings and people. A session cookie, or `ADMIN_KEY` + `X-Tenant`. Rows m
 | Method | Path | Body | Does |
 |--------|------|------|------|
 | GET | `/settings` | — | `{tenant, me, isAdmin, users}`. Non-admins get an empty `users` |
-| PATCH | `/settings` | `{name?, config?}` | **admin** — board name, brand, tagline, accent, people, tags, dots |
+| PATCH | `/settings` | `{name?, config?}` | **admin** — board name, brand, tagline, accent, people, tags, dots, `agentCardsDefault`, `reviewGate`. See [Board config](#board-config) |
 | GET | `/settings/users` | — | **admin** — everyone who can sign in to this board |
 | POST | `/settings/users` | `{username, displayName?, isAdmin?}` | **admin** — add a person to this board. Returns `{user, password, existing}`. Someone who already has an account (they are on another board) joins with the password they already use and `password` is `null`; only a new person gets one issued, shown **only here**. Also adds the display name to the board's people list |
 | PATCH | `/settings/users/:id` | `{displayName?, isAdmin?, resetPassword?}` | **admin** — `isAdmin` changes their role **on this board only**; `displayName` and `resetPassword` belong to the person, so they apply on every board they are on. A reset returns a new one-time `password` and signs them out everywhere |
@@ -271,7 +307,7 @@ Verbs so far: `card.created`, `card.moved`, `card.assigned`, `card.claimed`,
 
 | Verb | `data` | Emitted when |
 |---|---|---|
-| `card.moved` | `{from, to, title}` | the status changes |
+| `card.moved` | `{from, to, title}`, plus `approvedBy` | the status changes. `approvedBy` is present only when the board has `config.reviewGate` and the card arrived in `done`; it is the approving admin's name, or `ADMIN_KEY` when the admin key made the move |
 | `card.assigned` | `{from, to, title}` | the assignee changes, and when a card is created already assigned to somebody other than the creator (`from` is `null`). It is not emitted for an unassigned card or one assigned to its creator |
 | `card.claimed` | `{title, until, minutes}` | a claim or re-claim succeeds |
 | `card.released` | `{title}` | a live lease is released with `DELETE`. Not for a lapsed lease, and not when `done` drops the claim |
@@ -295,15 +331,46 @@ Board admins manage agents in **Settings → Agents**, or here. A session cookie
 
 | Method | Path | Body | Does |
 |--------|------|------|------|
-| GET | `/settings/agents` | — | **admin** — every agent on this board. Never returns a token |
-| POST | `/settings/agents` | `{name, scope?}` | **admin** — mint one. Returns `{agent, token}`, the token shown **only here**. The name is added to the board's assignee list |
-| PATCH | `/settings/agents/:id` | `{scope?, disabled?, rotate?, webhookUrl?, webhookVerbs?}` | **admin** — change scope, disable or re-enable, rotate the token (returns the new one once; the old one stops working immediately), or set where the agent is woken. Setting `webhookUrl` returns a `webhookSecret` **once**; `null` clears it |
+| GET | `/settings/agents` | — | **admin** — every agent on this board, each with its `rateLimit`. Never returns a token |
+| POST | `/settings/agents` | `{name, scope?, rateLimit?}` | **admin** — mint one. Returns `{agent, token}`, the token shown **only here**. The name is added to the board's assignee list |
+| PATCH | `/settings/agents/:id` | `{scope?, disabled?, rotate?, webhookUrl?, webhookVerbs?, rateLimit?}` | **admin** — change scope, set the write limit, disable or re-enable, rotate the token (returns the new one once; the old one stops working immediately), or set where the agent is woken. Setting `webhookUrl` returns a `webhookSecret` **once**; `null` clears it |
 | DELETE | `/settings/agents/:id` | — | **admin** — remove it. Notes and events keep its name |
 
 Names are 2–40 characters of `a-z 0-9 . _ -` with no spaces, because the name is also a
 note author and a card assignee. Tokens are stored as `HMAC-SHA256(KEY_PEPPER, token)`, the
 same as board passphrases — nothing can read one back, and rotating `KEY_PEPPER` invalidates
 every agent token as well as every passphrase.
+
+## Rate limits
+
+Each agent has a ceiling on **writes** per minute: 120 by default, set per agent by a board
+admin through `rateLimit` on `POST` or `PATCH /settings/agents` (a whole number from 1 to
+10000; `GET /settings/agents` shows it). A write is any request that is not
+`GET`, `HEAD` or `OPTIONS`, on any route. Only agent tokens are limited; people and the admin
+key are not.
+
+Past the ceiling the request is refused before its handler runs, with `429`:
+
+```
+HTTP/1.1 429
+Retry-After: 23
+
+{ "error": "rate limit exceeded: this agent may make 120 writes per minute",
+  "limit": 120, "window": "1 minute" }
+```
+
+- **Honour `Retry-After`.** It is whole seconds, at least 1, rounded up so that waiting
+  that long lands outside the window. Stop writing until it has passed.
+- **A refused request still counts.** A loop that ignores the `429` keeps itself throttled.
+  Wait; do not retry at once.
+- **Reads are not counted.** `GET /events?since=` exists so an agent does not poll the board,
+  and throttling the cheap call would drive agents back to the expensive one. A throttled
+  agent can still read.
+- **The window is a fixed minute** that starts at the agent's first write after the last
+  window ended, not a sliding one. A burst that straddles a boundary can briefly exceed the
+  number, by up to double. The limit guards against runaway loops. It is not a metered quota.
+
+A `read`-scoped agent is refused with `403` before the count is touched.
 
 ## Being woken
 
@@ -453,6 +520,18 @@ admin and gets `401` here.
 
 `names` and `tags` accept an array or a comma-separated string. `accent` is `#rrggbb`.
 
+## Status codes
+
+| Code | Meaning |
+|---|---|
+| `400` | Malformed request, or a credential that names nobody where a name is needed |
+| `401` | Wrong, disabled or missing credential |
+| `403` | Allowed on this board, but not to do that: `read` scope, a decision an agent may not settle, `done` on a gated board, `/me/work` for an agent |
+| `404` | Does not exist, is `human_only` to an agent, or belongs to another board |
+| `409` | Someone changed it first, or someone else holds the claim |
+| `422` | The content is wrong; `field` says which |
+| `429` | An agent has used its writes for this minute. Wait `Retry-After` seconds. See [Rate limits](#rate-limits) |
+
 ## curl examples
 
 ```bash
@@ -468,7 +547,7 @@ curl -s -X PATCH -H "Authorization: Bearer $KEY" -H "Content-Type: application/j
 
 ## Columns
 
-`todo` → `in_progress` → `review` → `done`, plus `stuck`. "Review" is Adi's sign-off gate.
+`todo` → `in_progress` → `review` → `done`, plus `stuck`. "Review" is Adi's sign-off gate. On a board with `config.reviewGate` it is enforced: see [The approval gate](#the-approval-gate).
 
 `stuck` is a siding, not a step: work that has started and cannot proceed. It sits beside
 `in_progress` rather than after it, and a card leaves it in whichever direction the blockage

@@ -1,6 +1,7 @@
 import { sql } from '../../../../lib/db';
 import { json, options } from '../../../../lib/http';
 import { withUser, hashKey, normalizeConfig } from '../../../../lib/tenant';
+import { rateLimitRefusal } from '../../../../lib/ratelimit.mjs';
 import { boardAgents, publicAgent, newAgentToken, validAgentName, SCOPES } from '../../../../lib/agents';
 export const dynamic = 'force-dynamic';
 export async function OPTIONS() { return options(); }
@@ -20,11 +21,20 @@ export const POST = withUser(async (req, ctx, t, c) => {
   }
   if (!SCOPES.includes(scope)) return json({ error: `scope must be ${SCOPES.join(' or ')}` }, 400);
 
+  const refusal = rateLimitRefusal(b.rateLimit);
+  if (refusal) return json(refusal, 422);
+  const limit = b.rateLimit === undefined || b.rateLimit === null || b.rateLimit === '' ? null : b.rateLimit;
+
   const token = newAgentToken(t.slug);
   let agent;
   try {
-    [agent] = await sql`insert into agents (tenant_id, name, token_hash, scope)
-      values (${t.id}, ${name}, ${hashKey(token)}, ${scope}) returning *`;
+    // Absent means the column default, so the number lives in one place (the migration)
+    // and the route does not repeat it.
+    [agent] = limit == null
+      ? await sql`insert into agents (tenant_id, name, token_hash, scope)
+          values (${t.id}, ${name}, ${hashKey(token)}, ${scope}) returning *`
+      : await sql`insert into agents (tenant_id, name, token_hash, scope, rate_limit)
+          values (${t.id}, ${name}, ${hashKey(token)}, ${scope}, ${limit}) returning *`;
   } catch (e) {
     if (e.code === '23505') return json({ error: 'an agent with that name is already on this board' }, 409);
     throw e;

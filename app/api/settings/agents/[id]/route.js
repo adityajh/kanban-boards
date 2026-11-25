@@ -2,6 +2,7 @@ import { sql } from '../../../../../lib/db';
 import { json, options, idParam } from '../../../../../lib/http';
 import { withUser, hashKey } from '../../../../../lib/tenant';
 import { publicAgent, newAgentToken, SCOPES } from '../../../../../lib/agents';
+import { rateLimitRefusal } from '../../../../../lib/ratelimit.mjs';
 import { newWebhookSecret, validWebhookUrl } from '../../../../../lib/webhooks';
 export const dynamic = 'force-dynamic';
 export async function OPTIONS() { return options(); }
@@ -16,6 +17,11 @@ export const PATCH = withUser(async (req, ctx, t) => {
   if (b.scope != null && !SCOPES.includes(b.scope)) {
     return json({ error: `scope must be ${SCOPES.join(' or ')}` }, 400);
   }
+
+  const refusal = rateLimitRefusal(b.rateLimit);
+  if (refusal) return json(refusal, 422);
+  const setLimit = b.rateLimit === undefined || b.rateLimit === null || b.rateLimit === ''
+    ? null : b.rateLimit;
 
   const [cur] = await sql`select * from agents where id=${id} and tenant_id=${t.id}`;
   if (!cur) return json({ error: 'not found' }, 404);
@@ -51,7 +57,13 @@ export const PATCH = withUser(async (req, ctx, t) => {
       disabled_at = ${disabledAt === undefined ? cur.disabled_at : disabledAt},
       webhook_url = ${setUrl === undefined ? cur.webhook_url : setUrl},
       webhook_secret = ${setUrl === undefined ? cur.webhook_secret : setSecret},
-      webhook_verbs = ${verbs === undefined ? cur.webhook_verbs : verbs}
+      webhook_verbs = ${verbs === undefined ? cur.webhook_verbs : verbs},
+      rate_limit = coalesce(${setLimit}::int, rate_limit),
+      -- Changing the limit also forgets what has been spent. An admin who raises the limit
+      -- for an agent that is being throttled right now wants it working now; without the
+      -- reset the old count would sit against the new ceiling until the top of the minute.
+      rl_window_start = case when ${setLimit != null} then null else rl_window_start end,
+      rl_count = case when ${setLimit != null} then 0 else rl_count end
     where id=${id} and tenant_id=${t.id} returning *`;
 
   const out = { agent: publicAgent(agent) };

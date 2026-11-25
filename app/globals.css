@@ -263,3 +263,11 @@ a.linkbtn{text-decoration:none;display:inline-block}
 .boardnote{padding:14px 26px 0;max-width:640px;line-height:1.5}
 @media(max-width:720px){.topbar{flex-wrap:wrap;gap:8px 14px;padding:12px 16px}.boardnote{padding:12px 16px 0}}
 @media(max-width:520px){.addinline input.toinput{flex-basis:84px;width:84px}}
+/* A settings field that needs a sentence of explanation under it, and the small numeric
+   inputs in the agents table. */
+.aform label.wide{grid-column:1/-1}
+.aform label.check{display:grid;grid-template-columns:auto 1fr;gap:4px 8px;align-items:start}
+.aform label.check input[type=checkbox]{margin-top:2px}
+.aform label.check .sub{grid-column:2}
+.aform .sub{font-size:11.5px;color:var(--ink-60);line-height:1.5;font-weight:400;text-transform:none;letter-spacing:0;margin-top:4px}
+.atable input.num{width:72px;font-size:12px;padding:3px 6px}

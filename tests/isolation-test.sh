@@ -731,6 +731,162 @@ check "the registry never carries token_hash" False "$(echo "$REG" | grep -q 'to
 check "the registry never carries webhook_secret" False "$(echo "$REG" | grep -q 'webhook_secret' && echo True || echo False)"
 check "nor any live token" False "$(echo "$REG" | grep -qF "$AG_TOK" && echo True || echo False)"
 
+echo "== approval gate and write limit"
+# Credentials, and why each is live here. This block sits after the registry checks and before
+# "directed work cleanup", so nothing has logged anyone out or deleted the agent yet:
+#   ADM + JT  the master key acting on jbj. A header, so it cannot go stale. Used for settings
+#             changes, fixtures and every read-back.
+#   AGH       zz-test-agent (write scope). Still live: it is deleted in "agent cleanup", below.
+#   JAR3      zz-test-member, signed in at the top of "directed work" and still live (the
+#             registry checks above prove it with /auth/me). A board admin of jbj since the
+#             re-promotion near "master admin"; the block below demotes it briefly to get a
+#             non-admin and proves the demotion took before relying on it.
+# The checks directly below prove all three before anything depends on them.
+check "the agent token is live for the gate and limit checks" 200 "$(code -H "$AGH" $B/api/cards)"
+check "the member's session is live and is the member" zz-test-member "$(curl -s -b $JAR3 $B/api/auth/me | jget "d['user']['username']")"
+check "the member is a board admin of jbj right now" True "$(curl -s -b $JAR3 -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
+
+# callh is callw plus the response headers, for the one check that needs a header.
+callh() {
+  local r nl=$'\n' hf; hf=$(mktemp)
+  r=$(curl -s -D "$hf" -w '\n%{http_code}' "$@"); RC=${r##*"$nl"}; RB=${r%"$nl"*}
+  RH=$(tr -d '\r' < "$hf"); rm -f "$hf"
+}
+gate_flag() { curl -s -H "$ADM" -H "$JT" $B/api/settings | jget 'd["tenant"]["config"].get("reviewGate", False)'; }
+agent_rl() { curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "[a for a in d if a['id']==$AG_ID][0]['rateLimit']"; }
+
+# What to put back. ORIG_RL is read before anything changes it; the flags below make the exit
+# trap undo only what is still undone, so an interrupted run does not leave the real board
+# gated or the agent throttled.
+ORIG_RL=$(agent_rl)
+ORIG_GATE=$(gate_flag)
+GATE_TOUCHED=0; RL_TOUCHED=0; MEMBER_DEMOTED=0
+restore_board() {
+  [ "$GATE_TOUCHED" = 1 ] && curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":false}}'
+  [ "$RL_TOUCHED" = 1 ] && curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d "{\"rateLimit\":$ORIG_RL}"
+  # The non-admin check below takes somebody's admin rights away for a handful of requests.
+  # If the run dies in that window the person stays demoted on a real board, which is the one
+  # piece of damage this suite could do that nobody would notice until they tried to use it.
+  [ "$MEMBER_DEMOTED" = 1 ] && curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":true}'
+  return 0
+}
+trap restore_board EXIT
+check "the agent's limit is a whole number to start with" True "$(echo "$ORIG_RL" | grep -qE '^[0-9]+$' && echo True || echo False)"
+check "the board starts with the gate off" False "$ORIG_GATE"
+
+echo "-- approval gate (per board, off by default)"
+# Reset this agent's window first, by writing its own limit back, so the handful of agent
+# writes below cannot be refused by the earlier ones in the same minute.
+RL_TOUCHED=1
+check "the agent's window is reset before the gate checks" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d "{\"rateLimit\":$ORIG_RL}")"
+G1=$(mkcard '{"title":"zz gate one"}')
+G2=$(mkcard '{"title":"zz gate two","status":"in_progress"}')
+check "the gate fixture cards are created" True "$([ -n "$G1" ] && [ -n "$G2" ] && echo True || echo False)"
+gst() { curl -s -H "$ADM" -H "$JT" $B/api/cards/$1 | jget 'd["status"]'; }
+
+check "with the gate off, an agent moves a card to done -> 200" 200 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}')"
+check "and it is done" done "$(gst $G1)"
+check "undo: the card moves back to todo" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"todo"}')"
+check "and is todo again" todo "$(gst $G1)"
+
+GATE_TOUCHED=1
+check "a board admin turns the gate on -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":true}}')"
+check "the setting reads back as on" True "$(gate_flag)"
+check "turning it on did not drop the board's people" "$JBJ_NAMES" "$(names_of "$JBJ")"
+
+callh -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}'
+check "gate on: an agent moving a card to done -> 403" 403 "$RC"
+check "and the refusal says what to do instead" True "$(echo "$RB" | jget "'review' in d['error']")"
+check "the card's status is unchanged" todo "$(gst $G1)"
+
+# The member is a board admin at this point, so a non-admin has to be made. The demotion is
+# proved by asking the member's own session before the refusal is trusted.
+MEMBER_DEMOTED=1
+check "the member is demoted for the non-admin check" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":false}')"
+check "and their own session now says not admin" False "$(curl -s -b $JAR3 -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
+check "gate on: an ordinary member moving a card to done -> 403" 403 "$(code -X PATCH -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}')"
+check "the card's status is still unchanged" todo "$(gst $G1)"
+check "an ordinary member may still ask for approval (-> review)" 200 "$(code -X PATCH -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"review"}')"
+check "the member is promoted back" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":true}')"
+check "and their own session says admin again" True "$(curl -s -b $JAR3 -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
+MEMBER_DEMOTED=0
+
+GEV=$(ev_cursor)
+check "gate on: a board admin moving the card to done -> 200" 200 "$(code -X PATCH -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}')"
+check "and it is done" done "$(gst $G1)"
+GEVS=$(ev_since "$GEV")
+check "the card.moved event carries approvedBy with the admin's name" "['ZZ Test Member']" "$(echo "$GEVS" | jget "[e['data'].get('approvedBy') for e in d['events'] if e['verb']=='card.moved' and e['subject']['type']=='card' and int(e['subject']['id'])==$G1]")"
+
+check "gate on: an agent moving in_progress straight to done -> 403" 403 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G2 -d '{"status":"done"}')"
+check "the card is still in_progress" in_progress "$(gst $G2)"
+check "gate on: an agent moving a card into review -> 200" 200 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G2 -d '{"status":"review"}')"
+check "and it is in review" review "$(gst $G2)"
+
+check "gate on: an agent creating a card already done -> 403" 403 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz gate born done","status":"done"}')"
+check "and no such card was created" False "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "any(c['title']=='zz gate born done' for c in d)")"
+
+check "gate on: retitling a card that is already done -> 200" 200 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G1 -d '{"title":"zz gate one renamed"}')"
+check "the retitle applied" "zz gate one renamed" "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$G1 | jget 'd["title"]')"
+check "and the card is still done" done "$(gst $G1)"
+
+check "a board admin turns the gate back off -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":false}}')"
+check "the gate is off again" False "$(gate_flag)"
+GATE_TOUCHED=0
+check "and the board's people list is unchanged" "$JBJ_NAMES" "$(names_of "$JBJ")"
+for K in $G1 $G2; do curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K; done
+check "the gate fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "all(not c['title'].startswith('zz gate ') for c in d)")"
+
+echo "-- per-agent write limit (last, so a failure here cannot throttle anything above)"
+LIST=$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents)
+check "rateLimit appears in the agents list" True "$(echo "$LIST" | jget "all('rateLimit' in a for a in d)")"
+check "rl_count and rl_window_start do not" False "$(echo "$LIST" | jget "any('rl_count' in a or 'rl_window_start' in a for a in d)")"
+check "nor does any other rl_ plumbing" False "$(echo "$LIST" | grep -q 'rl_' && echo True || echo False)"
+check "rateLimit 0 -> 422" 422 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"rateLimit":0}')"
+check "rateLimit 10001 -> 422" 422 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"rateLimit":10001}')"
+check "rateLimit 'abc' -> 422" 422 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"rateLimit":"abc"}')"
+check "the 422 names the rateLimit field" rateLimit "$(curl -s -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"rateLimit":0}' | jget 'd["field"]')"
+check "refused values left the limit alone" "$ORIG_RL" "$(agent_rl)"
+
+RL_TOUCHED=1
+callw -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"rateLimit":2}'
+check "the limit is lowered to 2 -> 200" 200 "$RC"
+check "and the response carries it" 2 "$(echo "$RB" | jget 'd["agent"]["rateLimit"]')"
+check "the agents list agrees" 2 "$(agent_rl)"
+
+check "agent write 1 of 2 -> 201" 201 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz rl one"}')"
+check "agent write 2 of 2 -> 201" 201 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz rl two"}')"
+callh -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz rl refused"}'
+check "agent write 3 -> 429" 429 "$RC"
+check "the 429 body carries limit 2" 2 "$(echo "$RB" | jget 'd["limit"]')"
+check "and an error that mentions the rate limit" True "$(echo "$RB" | jget "'rate limit' in d['error']")"
+RA=$(echo "$RH" | awk 'tolower($1)=="retry-after:" {print $2}')
+check "the 429 has a Retry-After that is a positive integer" True "$([[ "$RA" =~ ^[1-9][0-9]*$ ]] && echo True || echo False)"
+check "and it is no more than a minute" True "$([[ "$RA" =~ ^[0-9]+$ ]] && [ "$RA" -le 60 ] && echo True || echo False)"
+check "the refused write created nothing" False "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "any(c['title']=='zz rl refused' for c in d)")"
+check "while the two allowed ones did land" 2 "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "len([c for c in d if c['title'] in ('zz rl one','zz rl two')])")"
+check "a GET by the throttled agent still succeeds (reads are not counted)" 200 "$(code -H "$AGH" $B/api/cards)"
+check "and so does a second one" 200 "$(code -H "$AGH" $B/api/cards)"
+check "a PATCH by the throttled agent is refused too" 429 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$A_CARD -d '{"title":"zz rl still refused"}')"
+
+check "a person's first write while the agent is throttled -> 201" 201 "$(code -X POST -b $JAR3 -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz rl person one"}')"
+check "their second -> 201" 201 "$(code -X POST -b $JAR3 -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz rl person two"}')"
+check "their third, past the agent's limit of 2 -> 201" 201 "$(code -X POST -b $JAR3 -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz rl person three"}')"
+
+# The agent has spent 3 or more writes of a limit of 2, and so far 4 (the PATCH above counts).
+# Raising the limit to 3 would still refuse the next write if the spent count survived, so
+# a 201 here proves the window was reset by the change, not that the minute rolled over.
+check "the limit is raised to 3 -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"rateLimit":3}')"
+check "the agent can write immediately -> 201" 201 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz rl after raise"}')"
+
+check "the original limit is restored -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d "{\"rateLimit\":$ORIG_RL}")"
+RL_TOUCHED=0
+check "and reads back as it was" "$ORIG_RL" "$(agent_rl)"
+check "the agent writes after the restore -> 201" 201 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz rl after restore"}')"
+for K in $(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "' '.join(str(c['id']) for c in d if c['title'].startswith('zz rl '))"); do
+  curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K
+done
+check "the write-limit fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "all(not c['title'].startswith('zz rl ') for c in d)")"
+
 echo "-- directed work cleanup"
 for K in $STK $AS_CARD $NC $AN $CL $CD $IB $HO; do
   curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K
