@@ -3,7 +3,7 @@ import { json, options, idParam } from '../../../../../lib/http';
 import { withUser, hashKey } from '../../../../../lib/tenant';
 import { publicAgent, newAgentToken, SCOPES } from '../../../../../lib/agents';
 import { rateLimitRefusal } from '../../../../../lib/ratelimit.mjs';
-import { newWebhookSecret, validWebhookUrl } from '../../../../../lib/webhooks';
+import { newWebhookSecret, validWebhookUrl, secretRefusal } from '../../../../../lib/webhooks';
 export const dynamic = 'force-dynamic';
 export async function OPTIONS() { return options(); }
 
@@ -26,9 +26,18 @@ export const PATCH = withUser(async (req, ctx, t) => {
   const [cur] = await sql`select * from agents where id=${id} and tenant_id=${t.id}`;
   if (!cur) return json({ error: 'not found' }, 404);
 
-  // Setting a URL mints a new signing secret and returns it once. Sending null clears the
-  // webhook, and the agent falls back to reading the event feed.
-  let webhookSecret = null;
+  // Setting a URL mints a signing secret and returns it once, unless the admin supplies one.
+  // Sending a null URL clears the webhook and the agent falls back to reading the feed.
+  //
+  // `webhookSecret` exists because a receiver on somebody else's automation platform often
+  // has a secret of its own that it cannot be told to change. Supplying it is not a weaker
+  // arrangement: the board signs with whichever key it holds, and only a key it generated is
+  // ever echoed back, because a key the admin typed is one they already have.
+  const badSecret = secretRefusal(b.webhookSecret);
+  if (badSecret) return json(badSecret, 422);
+  const supplied = b.webhookSecret ? String(b.webhookSecret) : null;
+
+  let generated = null;
   let setUrl, setSecret;
   if (b.webhookUrl !== undefined) {
     if (b.webhookUrl === null || b.webhookUrl === '') {
@@ -37,9 +46,13 @@ export const PATCH = withUser(async (req, ctx, t) => {
       return json({ error: 'webhookUrl must be an https address, and not a private one' }, 400);
     } else {
       setUrl = String(b.webhookUrl);
-      webhookSecret = newWebhookSecret();
-      setSecret = webhookSecret;
+      if (supplied) setSecret = supplied;
+      else { generated = newWebhookSecret(); setSecret = generated; }
     }
+  } else if (supplied) {
+    // Replacing the key without touching where deliveries go: what rotating on the
+    // receiver's side looks like from this end.
+    setSecret = supplied;
   }
 
   let verbs;
@@ -56,7 +69,7 @@ export const PATCH = withUser(async (req, ctx, t) => {
       token_hash = coalesce(${token ? hashKey(token) : null}, token_hash),
       disabled_at = ${disabledAt === undefined ? cur.disabled_at : disabledAt},
       webhook_url = ${setUrl === undefined ? cur.webhook_url : setUrl},
-      webhook_secret = ${setUrl === undefined ? cur.webhook_secret : setSecret},
+      webhook_secret = ${setSecret === undefined ? cur.webhook_secret : setSecret},
       webhook_verbs = ${verbs === undefined ? cur.webhook_verbs : verbs},
       rate_limit = coalesce(${setLimit}::int, rate_limit),
       -- Changing the limit also forgets what has been spent. An admin who raises the limit
@@ -68,7 +81,7 @@ export const PATCH = withUser(async (req, ctx, t) => {
 
   const out = { agent: publicAgent(agent) };
   if (token) out.token = token;
-  if (webhookSecret) out.webhookSecret = webhookSecret;
+  if (generated) out.webhookSecret = generated;
   return json(out);
 }, { adminOnly: true });
 

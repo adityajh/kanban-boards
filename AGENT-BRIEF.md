@@ -158,10 +158,17 @@ arrives as:
 POST <your url>
 X-Board-Event: card.moved
 X-Board-Delivery: 4821
-X-Board-Signature: sha256=<HMAC-SHA256 of the exact body, with your webhook secret>
+X-Board-Signature:   sha256=<HMAC-SHA256 of the exact body, with your webhook secret>
+X-Hub-Signature-256: the identical value, under GitHub's header name
 ```
 
-**Verify that signature.** Anyone who learns your URL can post to it otherwise. Narrow what
+**Verify that signature.** Anyone who learns your URL can post to it otherwise. Both headers
+carry the same digest, so verify whichever your receiver already understands — most things
+that check webhooks at all implement GitHub's convention and read `X-Hub-Signature-256`.
+Sign the raw body bytes as received: parsing the JSON and re-serializing it changes them.
+
+If your receiver has a signing secret of its own and cannot be told to use another, say so —
+an admin can set the board to sign with yours instead of generating one. Narrow what
 wakes you with `webhookVerbs` — `["card.moved"]` rather than every note anyone writes.
 
 **Include `card.assigned` and `note.added`.** `card.assigned` is how you learn you have been

@@ -7,7 +7,7 @@ import {
   readCookie, clearSessionCookie, MIN_PASSWORD, publicPerson, SESSION_COOKIE,
 } from '../lib/password.mjs';
 import { newAgentToken, validAgentName, SCOPES } from '../lib/agent-token.mjs';
-import { newWebhookSecret, validWebhookUrl, sign, verifySignature } from '../lib/webhook-sign.mjs';
+import { newWebhookSecret, validWebhookUrl, sign, verifySignature, secretRefusal } from '../lib/webhook-sign.mjs';
 import { validateItem, decisionRefusal, findContactDetail, newLogId } from '../lib/tracker.mjs';
 import {
   STATUSES, statusRefusal, sameName, identityName, leaseRefusal, claimState, claimRefusal,
@@ -184,6 +184,36 @@ await t('a webhook signature verifies, and a tampered body does not', () => {
   assert.ok(!verifySignature(secret, body + ' ', h), 'a changed body must not verify');
   assert.ok(!verifySignature(newWebhookSecret(), body, h), 'another secret must not verify');
   assert.ok(!verifySignature(secret, body, ''), 'an absent signature must not verify');
+});
+
+await t('a secret the admin supplies signs exactly as a generated one does', () => {
+  // The whole point of accepting a receiver's own secret is that nothing else changes: same
+  // bytes, same algorithm, same hex digest. If these ever diverged, a receiver told to expect
+  // GitHub-style verification would reject every delivery.
+  const body = JSON.stringify({ id: 1, verb: 'card.assigned' });
+  const theirs = 'whsec_their_own_platform_key_000';
+  assert.equal(sign(theirs, body), sign(theirs, body), 'signing must be deterministic');
+  assert.ok(sign(theirs, body).startsWith('sha256='), 'signature should name its algorithm');
+  assert.ok(verifySignature(theirs, body, sign(theirs, body)), 'a supplied secret must verify');
+  assert.ok(!verifySignature(theirs, body, sign(newWebhookSecret(), body)),
+    'a different secret must not verify');
+});
+
+await t('a supplied webhook secret is refused only when it is unusable', () => {
+  // Absent means "leave the existing key alone", which is how the settings form sends a blank
+  // box; it must not be read as a request to set an empty secret.
+  assert.equal(secretRefusal(undefined), null);
+  assert.equal(secretRefusal(null), null);
+  assert.equal(secretRefusal(''), null);
+  assert.equal(secretRefusal('whsec_a_perfectly_fine_secret'), null);
+  assert.equal(secretRefusal('x'.repeat(16)), null, '16 characters is the floor, not below it');
+  assert.equal(secretRefusal('x'.repeat(15))?.field, 'webhookSecret');
+  assert.equal(secretRefusal('x'.repeat(201))?.field, 'webhookSecret');
+  // A secret pasted with a space or newline in it signs fine here and fails at the receiver,
+  // which is the hardest kind of mismatch to debug.
+  assert.equal(secretRefusal('has a space in it 1234')?.field, 'webhookSecret');
+  assert.equal(secretRefusal('trailing_newline_secret\n')?.field, 'webhookSecret');
+  assert.equal(secretRefusal('\ttabbed_secret_value_12345')?.field, 'webhookSecret');
 });
 
 await t('webhook URLs cannot point inward', () => {

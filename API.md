@@ -383,7 +383,8 @@ POST <your webhook url>
 Content-Type: application/json
 X-Board-Event: card.moved
 X-Board-Delivery: 4821
-X-Board-Signature: sha256=<hmac of the raw body, with your webhook secret>
+X-Board-Signature:   sha256=<hmac of the raw body, with your webhook secret>
+X-Hub-Signature-256: the same value again, under GitHub's header name
 
 { "id": 4821, "board": "counsellor",
   "actor": { "kind": "person", "name": "Adi" },

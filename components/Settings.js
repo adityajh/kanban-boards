@@ -396,6 +396,7 @@ function Agents({ api }) {
   const [hookFor, setHookFor] = useState(null);   // agent id whose webhook is being edited
   const [hookUrl, setHookUrl] = useState('');
   const [hookVerbs, setHookVerbs] = useState('');
+  const [hookSecret, setHookSecret] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -433,12 +434,16 @@ function Agents({ api }) {
     setHookFor(a.id);
     setHookUrl(a.webhookUrl || '');
     setHookVerbs((a.webhookVerbs || []).join(', '));
+    // Never prefilled: the board does not hand a signing secret back after the one response
+    // that issued it, and a blank box here means "leave whatever key is already set alone".
+    setHookSecret('');
   };
   const saveHook = (a) => run(async () => {
     const verbs = hookVerbs.split(',').map(v => v.trim()).filter(Boolean);
     const d = await api('/settings/agents/' + a.id, 'PATCH', {
       webhookUrl: hookUrl.trim() || null,
       webhookVerbs: verbs,
+      ...(hookSecret.trim() ? { webhookSecret: hookSecret.trim() } : {}),
     });
     if (d.webhookSecret) setIssued({ name: d.agent.name, secret: d.webhookSecret });
     setHookFor(null);
@@ -555,6 +560,17 @@ function Agents({ api }) {
               <div className="aform">
                 <label>Webhook URL<input value={hookUrl} placeholder="https://…"
                   onChange={e => setHookUrl(e.target.value)} /></label>
+                <label>Signing secret (blank = the board makes one)
+                  <input value={hookSecret} onChange={e => setHookSecret(e.target.value)}
+                    placeholder="paste the receiver's own secret, if it has one"
+                    autoComplete="off" spellCheck="false" />
+                  <span className="sub">
+                    Most receivers accept a secret the board generates. Some — an agent living
+                    on someone else&apos;s automation platform, say — have their own and cannot be
+                    told to change it. Paste it here and the board signs with that instead.
+                    Blank leaves the existing key alone.
+                  </span>
+                </label>
                 <label>Verbs (comma separated, blank = all)<input value={hookVerbs}
                   placeholder="card.moved, note.added"
                   onChange={e => setHookVerbs(e.target.value)} /></label>
