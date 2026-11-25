@@ -841,9 +841,13 @@ echo "== approval gate and write limit"
 #             registry checks above prove it with /auth/me). A board admin of jbj since the
 #             re-promotion near "master admin"; the block below demotes it briefly to get a
 #             non-admin and proves the demotion took before relying on it.
+#   JBJ       the jbj board passphrase, a header like ADM, used for the one "names nobody" check.
+#             The refusal body is asserted to say "passphrase", which proves it was judged as a
+#             passphrase and not turned away as an unknown credential.
 # The checks directly below prove all three before anything depends on them.
 check "the agent token is live for the gate and limit checks" 200 "$(code -H "$AGH" $B/api/cards)"
 check "the member's session is live and is the member" zz-test-member "$(curl -s -b $JAR3 $B/api/auth/me | jget "d['user']['username']")"
+check "the board passphrase is live for the passphrase check" 200 "$(code -H "$JBJ" $B/api/cards)"
 check "the member is a board admin of jbj right now" True "$(curl -s -b $JAR3 -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
 
 # callh is callw plus the response headers, for the one check that needs a header.
@@ -853,6 +857,7 @@ callh() {
   RH=$(tr -d '\r' < "$hf"); rm -f "$hf"
 }
 gate_flag() { curl -s -H "$ADM" -H "$JT" $B/api/settings | jget 'd["tenant"]["config"].get("reviewGate", False)'; }
+agent_mf() { curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "[a for a in d if a['id']==$AG_ID][0]['mayFinish']"; }
 agent_rl() { curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "[a for a in d if a['id']==$AG_ID][0]['rateLimit']"; }
 
 # What to put back. ORIG_RL is read before anything changes it; the flags below make the exit
@@ -860,13 +865,16 @@ agent_rl() { curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "[a for a 
 # gated or the agent throttled.
 ORIG_RL=$(agent_rl)
 ORIG_GATE=$(gate_flag)
-GATE_TOUCHED=0; RL_TOUCHED=0; MEMBER_DEMOTED=0
+GATE_TOUCHED=0; RL_TOUCHED=0; MEMBER_DEMOTED=0; MF_TOUCHED=0
 restore_board() {
   [ "$GATE_TOUCHED" = 1 ] && curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":false}}'
   [ "$RL_TOUCHED" = 1 ] && curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d "{\"rateLimit\":$ORIG_RL}"
   # The non-admin check below takes somebody's admin rights away for a handful of requests.
   # If the run dies in that window the person stays demoted on a real board, which is the one
   # piece of damage this suite could do that nobody would notice until they tried to use it.
+  # may_finish is a standing right. A run that dies while the agent holds it would leave a
+  # test agent able to approve work on a gated board, so it is revoked here.
+  [ "$MF_TOUCHED" = 1 ] && curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"mayFinish":false}'
   [ "$MEMBER_DEMOTED" = 1 ] && curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":true}'
   return 0
 }
@@ -904,15 +912,25 @@ callh -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}'
 check "gate on: an agent moving a card to done -> 403" 403 "$RC"
 check "and the refusal says what to do instead" True "$(echo "$RB" | jget "'review' in d['error']")"
 check "the card's status is unchanged" todo "$(gst $G1)"
+check "the agent has not been granted may_finish (it defaults to false)" False "$(agent_mf)"
+
+callh -X PATCH -H "$JBJ" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}'
+check "gate on: a board passphrase moving a card to done -> 403" 403 "$RC"
+check "and the refusal says a passphrase names nobody" True "$(echo "$RB" | jget "'passphrase' in d['error']")"
+check "the card's status is unchanged by the passphrase" todo "$(gst $G1)"
 
 # The member is a board admin at this point, so a non-admin has to be made. The demotion is
 # proved by asking the member's own session before the refusal is trusted.
 MEMBER_DEMOTED=1
 check "the member is demoted for the non-admin check" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":false}')"
 check "and their own session now says not admin" False "$(curl -s -b $JAR3 -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
-check "gate on: an ordinary member moving a card to done -> 403" 403 "$(code -X PATCH -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}')"
-check "the card's status is still unchanged" todo "$(gst $G1)"
-check "an ordinary member may still ask for approval (-> review)" 200 "$(code -X PATCH -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"review"}')"
+check "gate on: an ordinary member asking for approval (-> review) -> 200" 200 "$(code -X PATCH -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"review"}')"
+MEV=$(ev_cursor)
+check "gate on: an ordinary, non-admin member moving a card to done -> 200" 200 "$(code -X PATCH -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}')"
+check "and it is done" done "$(gst $G1)"
+MEVS=$(ev_since "$MEV")
+check "the card.moved event carries approvedBy with the member's name" "['ZZ Test Member']" "$(echo "$MEVS" | jget "[e['data'].get('approvedBy') for e in d['events'] if e['verb']=='card.moved' and e['subject']['type']=='card' and int(e['subject']['id'])==$G1]")"
+check "undo: the card moves back to todo" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"todo"}')"
 check "the member is promoted back" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":true}')"
 check "and their own session says admin again" True "$(curl -s -b $JAR3 -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
 MEMBER_DEMOTED=0
@@ -928,6 +946,24 @@ check "the card is still in_progress" in_progress "$(gst $G2)"
 check "gate on: an agent moving a card into review -> 200" 200 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G2 -d '{"status":"review"}')"
 check "and it is in review" review "$(gst $G2)"
 
+# may_finish, end to end, on the same agent and card that were refused above. ADM grants it;
+# AGH is the agent that is then let through.
+MF_TOUCHED=1
+check "the agents list carries mayFinish, false for this agent" False "$(agent_mf)"
+check "mayFinish 'true' as a string -> 422" 422 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"mayFinish":"true"}')"
+check "and the refused value granted nothing" False "$(agent_mf)"
+check "the agent is still refused done after that" 403 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G2 -d '{"status":"done"}')"
+check "a board admin grants may_finish -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"mayFinish":true}')"
+check "the agents list shows mayFinish true" True "$(agent_mf)"
+check "gate on, may_finish granted: the SAME agent moving the card to done -> 200" 200 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G2 -d '{"status":"done"}')"
+check "and it is done" done "$(gst $G2)"
+check "a board admin revokes may_finish -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"mayFinish":false}')"
+check "the agents list shows mayFinish false again" False "$(agent_mf)"
+check "undo: the card moves back to review" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$G2 -d '{"status":"review"}')"
+check "gate on, may_finish revoked: the agent is refused done again -> 403" 403 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G2 -d '{"status":"done"}')"
+check "and the card is still in review" review "$(gst $G2)"
+MF_TOUCHED=0
+
 check "gate on: an agent creating a card already done -> 403" 403 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz gate born done","status":"done"}')"
 check "and no such card was created" False "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "any(c['title']=='zz gate born done' for c in d)")"
 
@@ -938,6 +974,8 @@ check "and the card is still done" done "$(gst $G1)"
 check "a board admin turns the gate back off -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":false}}')"
 check "the gate is off again" False "$(gate_flag)"
 GATE_TOUCHED=0
+check "may_finish is false on every agent on the board" True "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "all(a['mayFinish'] is False for a in d)")"
+check "and the gate is still off" False "$(gate_flag)"
 check "and the board's people list is unchanged" "$GATE_NAMES" "$(names_of "$JBJ")"
 for K in $G1 $G2; do curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K; done
 check "the gate fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "all(not c['title'].startswith('zz gate ') for c in d)")"

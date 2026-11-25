@@ -55,17 +55,20 @@ read what `GET /cards` gives a card you just made rather than assuming. Set
 `audience: "both"` when you want it looked at. **A card in Review is always visible to
 people**, whatever its audience, because an approval nobody can see is a card stuck forever.
 
-### On a gated board, your job ends at `review`
+### On a gated board, check before you mark work done
 
-A board may require a board admin for `done`. On such a board you may move a card into
-`review` from any column, and that is how you ask for approval. Moving it to `done` is
-`403` for you, whichever column it comes from, because a gate on `review` alone would be
-bypassed by skipping `review`. Creating a card already in `done` is refused for the same
-reason. The refusal says `this board requires a board admin to mark work done`; that
-sentence is how you learn the board is gated, since nothing else tells you. Do not retry
-it. Move the card to `review` and add a note saying what you want checked. Editing a card
-that is already `done`, to fix its title say, is not refused, because that edit approves
-nothing. When an admin approves, the `card.moved` event carries `approvedBy`.
+A board may ask a person to mark work done. On such a board you cannot mark work done
+UNLESS this board has allowed you, so check rather than assume. Moving a card into
+`review` is always open to you, from any column, and that is how you ask for approval.
+Moving it to `done` is `403` unless the board has allowed your agent to finish, whichever
+column it comes from, because a gate on `review` alone would be bypassed by skipping
+`review`. Creating a card already in `done` is refused on the same terms. The refusal says
+`this board asks a person to mark work done; move the card to review and say what you
+did`; that sentence is how you learn the board is gated, since nothing else tells you. Do
+not retry it. Move the card to `review` and add a note saying what you did and what you
+want checked. Any signed-in person on the board may then mark it done, admin or not. Editing
+a card that is already `done`, to fix its title say, is not refused, because that edit
+approves nothing. When somebody approves, the `card.moved` event carries `approvedBy`.
 
 ### Being handed work
 

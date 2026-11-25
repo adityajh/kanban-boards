@@ -80,6 +80,13 @@ export const PATCH = withUser(async (req, ctx, t) => {
     }, 422);
   }
 
+  // Whether this agent may mark work done where the board's gate is on. A boolean and
+  // nothing else: a string or a number here almost always means a client sent a form value
+  // raw, and quietly reading it as true would grant a permission nobody chose.
+  if (b.mayFinish != null && typeof b.mayFinish !== 'boolean') {
+    return json({ field: 'mayFinish', error: 'mayFinish must be true or false' }, 422);
+  }
+
   let verbs;
   if (b.webhookVerbs !== undefined) {
     verbs = Array.isArray(b.webhookVerbs) && b.webhookVerbs.length
@@ -97,6 +104,7 @@ export const PATCH = withUser(async (req, ctx, t) => {
       webhook_secret = ${setSecret === undefined ? cur.webhook_secret : setSecret},
       webhook_auth = ${setAuth === undefined ? cur.webhook_auth : setAuth},
       webhook_verbs = ${verbs === undefined ? cur.webhook_verbs : verbs},
+      may_finish = coalesce(${b.mayFinish ?? null}::boolean, may_finish),
       rate_limit = coalesce(${setLimit}::int, rate_limit),
       -- Changing the limit also forgets what has been spent. An admin who raises the limit
       -- for an agent that is being throttled right now wants it working now; without the

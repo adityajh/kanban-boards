@@ -280,3 +280,6 @@ a.linkbtn{text-decoration:none;display:inline-block}
 .pick code{font-size:11.5px;color:var(--ink-40)}
 .pick .sub{font-size:11px;color:var(--ink-40);text-align:right;margin:0}
 @media(max-width:520px){.pick{grid-template-columns:auto 1fr;gap:2px 8px}.pick .sub{grid-column:2;text-align:left}}
+/* The may-finish checkbox sits in a table cell of its own; centre it under its heading so a
+   column of them reads as a column rather than a ragged edge. */
+.atable label.finish{display:flex;justify-content:center;align-items:center;cursor:pointer;min-height:22px}

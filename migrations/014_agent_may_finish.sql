@@ -1,14 +1,10 @@
 -- 014_agent_may_finish.sql
 -- Which agents may mark work done.
 --
--- NOT APPLIED, AND NOT YET WIRED UP. This file is the design, committed so the
--- reasoning is not lost; the column exists on no branch, and approvalRefusal in
--- lib/cards.mjs still enforces 011's admin-only rule. Applying this alone changes
--- nothing, because nothing reads the column yet. The remaining work is: add
--- may_finish to caller()'s agent lookup in lib/tenant.js so it reaches c.agent,
--- rewrite approvalRefusal to the four-way rule below, expose it on publicAgent,
--- accept it in the agents PATCH route, and give it a checkbox per agent row in
--- Settings. Until then the gate behaves exactly as it has since 011.
+-- Applied to dev and production on 2026-11-25, and wired up in the same commit:
+-- caller() carries may_finish onto c.agent, approvalRefusal enforces the rule below,
+-- publicAgent exposes it, the agents PATCH route sets it, and each agent row in Settings
+-- has a checkbox for it.
 --
 -- 011 made the approval gate admin-only: with it on, a board admin could reach `done` and
 -- nobody else could. That was the right first cut and the wrong shape. Two things were

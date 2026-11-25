@@ -538,7 +538,7 @@ console.log('== approval gate on marking work done');
 const callers = {
   agent: { agent: { id: 1, name: 'grok' } },
   masterKey: { admin: true },
-  boardAdmin: { memberAdmin: true },
+  boardAdmin: { person: { id: 3, display_name: 'Y' }, memberAdmin: true },
   person: { person: { id: 2, display_name: 'X' } },
   passphrase: {},
 };
@@ -574,12 +574,70 @@ await t('on a gated board, the master key and a board admin may mark done', () =
   assert.strictEqual(approvalRefusal('done', gated, callers.masterKey), null);
   assert.strictEqual(approvalRefusal('done', gated, callers.boardAdmin), null);
 });
-await t('on a gated board, a plain person and a passphrase are refused done', () => {
-  assert.strictEqual(typeof approvalRefusal('done', gated, callers.person), 'string');
+await t('on a gated board, a plain person may mark done (011 refused them; 014 does not)', () => {
+  assert.strictEqual(approvalRefusal('done', gated, callers.person), null);
+});
+await t('on a gated board, a passphrase is refused done', () => {
   assert.strictEqual(typeof approvalRefusal('done', gated, callers.passphrase), 'string');
 });
 await t('an agent is refused even if it carries an admin flag', () => {
   assert.strictEqual(typeof approvalRefusal('done', gated, { agent: { name: 'g' }, admin: true }), 'string');
+});
+await t('an agent is refused even if it carries a person', () => {
+  assert.strictEqual(typeof approvalRefusal('done', gated, { agent: { name: 'g' }, person: { display_name: 'Gargi' } }), 'string');
+});
+
+console.log('== approval gate: who may finish (migration 014)');
+await t('an ordinary member is allowed done, where 011 refused them', () => {
+  assert.strictEqual(approvalRefusal('done', gated, { person: { display_name: 'Gargi' } }), null);
+  assert.strictEqual(approvalRefusal('done', gated, { person: { display_name: 'Gargi' }, memberAdmin: false }), null);
+});
+await t('a board admin who is a person is allowed done', () => {
+  assert.strictEqual(approvalRefusal('done', gated, { person: { display_name: 'Gargi' }, memberAdmin: true }), null);
+});
+await t('an agent with mayFinish true is allowed done', () => {
+  assert.strictEqual(approvalRefusal('done', gated, { agent: { id: 1, name: 'grok', mayFinish: true } }), null);
+});
+await t('the same agent without mayFinish is refused, with a sentence that says what to do', () => {
+  const r = approvalRefusal('done', gated, { agent: { id: 1, name: 'grok', mayFinish: false } });
+  assert.strictEqual(typeof r, 'string');
+  assert.ok(r.includes('review'), r);
+  assert.strictEqual(typeof approvalRefusal('done', gated, { agent: { id: 1, name: 'grok' } }), 'string');
+});
+await t('mayFinish must be strictly true: a string, a number or null grants nothing', () => {
+  for (const v of ['true', 1, 'yes', {}, [], null, undefined]) {
+    assert.strictEqual(typeof approvalRefusal('done', gated, { agent: { name: 'grok', mayFinish: v } }), 'string', JSON.stringify(v));
+  }
+});
+await t('mayFinish does not change any status an agent was already free to use', () => {
+  for (const status of ['review', 'todo', 'in_progress', 'stuck']) {
+    assert.strictEqual(approvalRefusal(status, gated, { agent: { name: 'grok', mayFinish: false } }), null, status);
+  }
+});
+await t('a board passphrase ({}) is refused even though it is not an agent', () => {
+  const r = approvalRefusal('done', gated, {});
+  assert.strictEqual(typeof r, 'string');
+  assert.ok(r.includes('passphrase'), r);
+});
+await t('ADMIN_KEY is allowed done', () => {
+  assert.strictEqual(approvalRefusal('done', gated, { admin: true }), null);
+});
+await t('gate absent, false or the string "true" is null for every caller type', () => {
+  const every = [
+    { agent: { name: 'a', mayFinish: false } }, { agent: { name: 'a', mayFinish: true } },
+    { person: { display_name: 'Gargi' } }, { person: { display_name: 'Gargi' }, memberAdmin: true },
+    { admin: true }, {}, undefined,
+  ];
+  for (const tenant of [{}, { config: {} }, { config: { reviewGate: false } }, { config: { reviewGate: 'true' } }]) {
+    for (const c of every) {
+      assert.strictEqual(approvalRefusal('done', tenant, c), null, `${JSON.stringify(tenant)} / ${JSON.stringify(c)}`);
+    }
+  }
+});
+await t('c undefined does not throw, for a gated board and a status that is not done', () => {
+  assert.doesNotThrow(() => approvalRefusal('done', gated, undefined));
+  assert.doesNotThrow(() => approvalRefusal('done', gated, null));
+  assert.strictEqual(approvalRefusal('review', gated, undefined), null);
 });
 await t('a missing caller does not throw', () => {
   assert.doesNotThrow(() => approvalRefusal('done', gated, undefined));

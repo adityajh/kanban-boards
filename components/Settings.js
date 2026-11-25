@@ -508,6 +508,7 @@ function Agents({ api }) {
     setHookFor(null);
   });
   const setScopeOf = (a, v) => run(() => api('/settings/agents/' + a.id, 'PATCH', { scope: v }));
+  const setFinishOf = (a, v) => run(() => api('/settings/agents/' + a.id, 'PATCH', { mayFinish: v }));
   // Changing the ceiling also clears the agent's current window server-side, so raising it
   // for an agent that is being throttled right now takes effect immediately rather than at
   // the top of the next minute.
@@ -535,7 +536,7 @@ function Agents({ api }) {
         {list.length > 0 && (
           <div className="ascroll">
             <table className="atable">
-              <thead><tr><th>Name</th><th>Scope</th><th>Writes/min</th><th>Last seen</th><th>Wake</th><th>State</th><th></th></tr></thead>
+              <thead><tr><th>Name</th><th>Scope</th><th>May finish</th><th>Writes/min</th><th>Last seen</th><th>Wake</th><th>State</th><th></th></tr></thead>
               <tbody>
                 {list.map(a => (
                   <tr key={a.id}>
@@ -546,6 +547,15 @@ function Agents({ api }) {
                         <option value="write">read + write</option>
                         <option value="read">read only</option>
                       </select>
+                    </td>
+                    <td>
+                      {/* Only bites where this board's approval gate is on; harmless and
+                          inert everywhere else, which is why it is a plain checkbox rather
+                          than something that appears and disappears with the board setting. */}
+                      <label className="finish" title="May move a card to Done where this board requires approval">
+                        <input type="checkbox" disabled={busy} checked={!!a.mayFinish}
+                          onChange={e => setFinishOf(a, e.target.checked)} />
+                      </label>
                     </td>
                     <td>
                       {/* A ceiling on writes, not on reads: the events feed exists so an
