@@ -369,7 +369,13 @@ check "and the body says passphrase is null" None "$(echo "$RB" | jget 'd["passp
 NP_USER=$(echo "$RB" | jget 'd["admin"]["username"]'); NP_PW=$(echo "$RB" | jget 'd["admin"]["password"]')
 check "a made-up bearer token cannot open it" 401 "$(code -H "$NP_BAD" -H "X-Tenant: $NP_SLUG" $B/api/cards)"
 check "nor can one sent without X-Tenant" 401 "$(code -H "$NP_BAD" $B/api/cards)"
-check "nor another board's passphrase" 401 "$(code -H "$JBJ" -H "X-Tenant: $NP_SLUG" $B/api/cards)"
+# A passphrase names its own board and X-Tenant is ignored — that has been true since the
+# first version of this app and is asserted further up ("tenant key ignores X-Tenant"). So
+# sending jbj's passphrase here does not fail: it succeeds, for JBJ. Expecting 401 was
+# testing the wrong thing. What matters is that it does not reach the passphrase-less board,
+# which is what this asserts.
+check "another board's passphrase opens its own board, not this one" jbj \
+  "$(curl -s -H "$JBJ" -H "X-Tenant: $NP_SLUG" $B/api/tenant | jget 'd["slug"]')"
 check "the master key with X-Tenant reads it" 200 "$(code -H "$ADM" -H "X-Tenant: $NP_SLUG" $B/api/cards)"
 check "and it is the right board" "$NP_SLUG" "$(curl -s -H "$ADM" -H "X-Tenant: $NP_SLUG" $B/api/tenant | jget 'd["slug"]')"
 JARNP=$(mktemp)
@@ -867,10 +873,16 @@ check "and it is done" done "$(gst $G1)"
 check "undo: the card moves back to todo" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$G1 -d '{"status":"todo"}')"
 check "and is todo again" todo "$(gst $G1)"
 
+# Captured HERE, not at the top of the file. Creating a person on a board appends their
+# display name to config.names by design (app/api/settings/users/route.js), so by this point
+# the suite's own fixtures have grown the list and the capture from line ~168 is stale. The
+# question this block asks is whether the GATE disturbs the list, so the baseline has to be
+# what the list holds immediately before the gate is touched.
+GATE_NAMES=$(names_of "$JBJ")
 GATE_TOUCHED=1
 check "a board admin turns the gate on -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":true}}')"
 check "the setting reads back as on" True "$(gate_flag)"
-check "turning it on did not drop the board's people" "$JBJ_NAMES" "$(names_of "$JBJ")"
+check "turning it on did not drop the board's people" "$GATE_NAMES" "$(names_of "$JBJ")"
 
 callh -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}'
 check "gate on: an agent moving a card to done -> 403" 403 "$RC"
@@ -910,7 +922,7 @@ check "and the card is still done" done "$(gst $G1)"
 check "a board admin turns the gate back off -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":false}}')"
 check "the gate is off again" False "$(gate_flag)"
 GATE_TOUCHED=0
-check "and the board's people list is unchanged" "$JBJ_NAMES" "$(names_of "$JBJ")"
+check "and the board's people list is unchanged" "$GATE_NAMES" "$(names_of "$JBJ")"
 for K in $G1 $G2; do curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K; done
 check "the gate fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "all(not c['title'].startswith('zz gate ') for c in d)")"
 
@@ -991,8 +1003,12 @@ check "the removed person cannot sign in" 401 "$(login zz-test-member brand-new-
 curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":false}'
 RESTORE_JBJ="{\"config\":{\"names\":$JBJ_NAMES,\"tagline\":$JBJ_TAGLINE}}"
 RESTORE_IND="{\"config\":{\"names\":$IND_NAMES}}"
-curl -s -o /dev/null -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/jbj -d "$RESTORE_JBJ"
-curl -s -o /dev/null -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/inditress -d "$RESTORE_IND"
+# Checked, not fired blind: a silent restore that fails leaves test names in the assignee
+# list of a board real people use, and the next run captures the polluted list as ITS
+# baseline and faithfully restores the pollution. That is how "ZZ Test Member" ended up
+# sitting on the inditress board for weeks with every run reporting success.
+check "jbj restore accepted" 200 "$(code -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/jbj -d "$RESTORE_JBJ")"
+check "inditress restore accepted" 200 "$(code -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/inditress -d "$RESTORE_IND")"
 check "jbj people list restored" "$JBJ_NAMES" "$(names_of "$JBJ")"
 check "jbj tagline restored" "$JBJ_TAGLINE" "$(curl -s -H "$JBJ" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"].get("tagline","")))')"
 check "inditress people list restored" "$IND_NAMES" "$(names_of "$IND")"
