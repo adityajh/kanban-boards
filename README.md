@@ -9,7 +9,7 @@ Neon Postgres. Started life as the Inditress board.
 - Plan: `/<slug>/plan` — the board's second surface, on boards whose config declares one
 - Board settings: `/<slug>/settings` (your password; and for board admins, board look-and-feel and people)
 - Admin overview: `/admin` (all boards, Review queue, stuck and stalled cards, recent notes, create a board)
-- API reference: [API.md](API.md)
+- API reference: [API.md](API.md) · Brief to hand a new agent: [AGENT-BRIEF.md](AGENT-BRIEF.md)
 
 ## How tenancy works
 
