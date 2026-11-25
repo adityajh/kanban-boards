@@ -265,6 +265,18 @@ function People({ users, me, api, onChanged }) {
   const [issued, setIssued] = useState(null); // { displayName, username, password }
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // Accounts that exist but are not on this board. Empty for a board admin who is not a
+  // master admin: who exists is not board-scoped information, so the API withholds it and
+  // they add people by username exactly as before.
+  const [available, setAvailable] = useState([]);
+  const [picked, setPicked] = useState([]);
+
+  const loadAvailable = useCallback(() => {
+    api('/settings/users/available')
+      .then(d => setAvailable(d.people || []))
+      .catch(() => setAvailable([]));   // an older deployment has no such route
+  }, [api]);
+  useEffect(() => { loadAvailable(); }, [loadAvailable, users.length]);
 
   const run = async (fn) => {
     setErr(''); setBusy(true);
@@ -363,11 +375,55 @@ function People({ users, me, api, onChanged }) {
         )}
       </section>
 
+      {available.length > 0 && (
+        <section>
+          <h3>Add from existing accounts <span>{available.length}</span></h3>
+          <p className="hint">
+            People who already have an account elsewhere. They join with the password they
+            already use, no new one is issued, and they become assignable here straight away.
+            They are added as members, never as admins — on a board with the approval gate on,
+            admin is the right to mark work done, so that stays a deliberate, separate act.
+          </p>
+          <div className="picklist">
+            {available.map(p2 => (
+              <label key={p2.id} className="pick">
+                <input type="checkbox" disabled={busy}
+                  checked={picked.includes(p2.id)}
+                  onChange={e => setPicked(v => e.target.checked
+                    ? [...v, p2.id] : v.filter(x => x !== p2.id))} />
+                <span className="pn">{p2.displayName}</span>
+                <code>@{p2.username}</code>
+                <span className="sub">
+                  {p2.boards === 0 ? 'on no board yet' : 'on ' + p2.boards + (p2.boards === 1 ? ' board' : ' boards')}
+                  {p2.neverSignedIn ? ' · never signed in' : ''}
+                </span>
+              </label>
+            ))}
+          </div>
+          <button className="btn" disabled={busy || picked.length === 0}
+            onClick={() => run(async () => {
+              // One request each, in order, so a failure part-way leaves the people before it
+              // added rather than rolling back work that succeeded.
+              for (const id of picked) {
+                const p3 = available.find(x => x.id === id);
+                if (p3) await api('/settings/users', 'POST',
+                  { username: p3.username, displayName: p3.displayName, isAdmin: false });
+              }
+              setPicked([]); setIssued(null); loadAvailable();
+            })}>
+            {busy ? 'Adding…' : picked.length
+              ? 'Add ' + picked.length + ' to this board'
+              : 'Select someone above'}
+          </button>
+        </section>
+      )}
+
       <section>
-        <h3>Add someone</h3>
+        <h3>Add someone new</h3>
         <p className="hint">
-          If this username already has an account on another board, they join with the
-          password they already use and no new one is issued.
+          For somebody with no account yet — this issues a one-time password, shown once.
+          If the username already exists they join with the password they already use, and
+          no new one is issued.
         </p>
         <form className="aform" onSubmit={add}>
           <label>Username<input value={username} placeholder="rahul"
@@ -397,6 +453,7 @@ function Agents({ api }) {
   const [hookUrl, setHookUrl] = useState('');
   const [hookVerbs, setHookVerbs] = useState('');
   const [hookSecret, setHookSecret] = useState('');
+  const [hookAuth, setHookAuth] = useState('signature');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -437,6 +494,7 @@ function Agents({ api }) {
     // Never prefilled: the board does not hand a signing secret back after the one response
     // that issued it, and a blank box here means "leave whatever key is already set alone".
     setHookSecret('');
+    setHookAuth(a.webhookAuth || 'signature');
   };
   const saveHook = (a) => run(async () => {
     const verbs = hookVerbs.split(',').map(v => v.trim()).filter(Boolean);
@@ -444,6 +502,7 @@ function Agents({ api }) {
       webhookUrl: hookUrl.trim() || null,
       webhookVerbs: verbs,
       ...(hookSecret.trim() ? { webhookSecret: hookSecret.trim() } : {}),
+      webhookAuth: hookAuth,
     });
     if (d.webhookSecret) setIssued({ name: d.agent.name, secret: d.webhookSecret });
     setHookFor(null);
@@ -560,7 +619,20 @@ function Agents({ api }) {
               <div className="aform">
                 <label>Webhook URL<input value={hookUrl} placeholder="https://…"
                   onChange={e => setHookUrl(e.target.value)} /></label>
-                <label>Signing secret (blank = the board makes one)
+                <label>How the board proves it is the board
+                  <select value={hookAuth} onChange={e => setHookAuth(e.target.value)}>
+                    <option value="signature">Signature (recommended)</option>
+                    <option value="bearer">Authorization: Bearer</option>
+                  </select>
+                  <span className="sub">
+                    Signature sends an HMAC of the body and never puts the key on the wire, so
+                    a leaked request reveals nothing reusable. Bearer sends the key itself on
+                    every delivery — weaker, and only for a receiver that cannot check
+                    signatures. In Bearer mode no signature headers are sent, and the key below
+                    must be the receiver&apos;s own: one the board generated would be refused.
+                  </span>
+                </label>
+                <label>{hookAuth === 'bearer' ? 'API key (required)' : 'Signing secret (blank = the board makes one)'}
                   <input value={hookSecret} onChange={e => setHookSecret(e.target.value)}
                     placeholder="paste the receiver's own secret, if it has one"
                     autoComplete="off" spellCheck="false" />

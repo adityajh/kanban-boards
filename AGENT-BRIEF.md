@@ -166,6 +166,12 @@ X-Hub-Signature-256: the identical value, under GitHub's header name
 carry the same digest, so verify whichever your receiver already understands — most things
 that check webhooks at all implement GitHub's convention and read `X-Hub-Signature-256`.
 Sign the raw body bytes as received: parsing the JSON and re-serializing it changes them.
+The board never puts your secret on the wire in this mode.
+
+If your receiver cannot verify signatures and needs a plain API key in an `Authorization`
+header, say so — an admin can switch your agent to bearer mode (`webhookAuth: "bearer"`).
+Deliveries then carry `Authorization: Bearer <key>` and **no signature headers**; do not
+expect them. The key travels on every request, which is weaker, so signatures stay the default.
 
 If your receiver has a signing secret of its own and cannot be told to use another, say so —
 an admin can set the board to sign with yours instead of generating one. Narrow what

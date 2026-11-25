@@ -7,7 +7,7 @@ import {
   readCookie, clearSessionCookie, MIN_PASSWORD, publicPerson, SESSION_COOKIE,
 } from '../lib/password.mjs';
 import { newAgentToken, validAgentName, SCOPES } from '../lib/agent-token.mjs';
-import { newWebhookSecret, validWebhookUrl, sign, verifySignature, secretRefusal } from '../lib/webhook-sign.mjs';
+import { newWebhookSecret, validWebhookUrl, sign, verifySignature, secretRefusal, webhookAuthRefusal, WEBHOOK_AUTH } from '../lib/webhook-sign.mjs';
 import { validateItem, decisionRefusal, findContactDetail, newLogId } from '../lib/tracker.mjs';
 import {
   STATUSES, statusRefusal, sameName, identityName, leaseRefusal, claimState, claimRefusal,
@@ -214,6 +214,22 @@ await t('a supplied webhook secret is refused only when it is unusable', () => {
   assert.equal(secretRefusal('has a space in it 1234')?.field, 'webhookSecret');
   assert.equal(secretRefusal('trailing_newline_secret\n')?.field, 'webhookSecret');
   assert.equal(secretRefusal('\ttabbed_secret_value_12345')?.field, 'webhookSecret');
+});
+
+await t('webhook auth mode is refused unless it is exactly one of the two', () => {
+  // Absent or blank means "leave it alone", as for the secret above.
+  assert.equal(webhookAuthRefusal(undefined), null);
+  assert.equal(webhookAuthRefusal(null), null);
+  assert.equal(webhookAuthRefusal(''), null);
+  assert.deepEqual(WEBHOOK_AUTH, ['signature', 'bearer']);
+  assert.equal(webhookAuthRefusal('signature'), null);
+  assert.equal(webhookAuthRefusal('bearer'), null);
+  // No case folding and no aliases: a mode that is guessed at is a delivery that is
+  // authenticated differently from what the admin thought they chose.
+  for (const bad of ['Bearer', 'none', 'hmac', 123, {}]) {
+    assert.equal(webhookAuthRefusal(bad)?.field, 'webhookAuth', `${JSON.stringify(bad)} should be refused`);
+  }
+  assert.equal(webhookAuthRefusal('none').error, 'webhookAuth must be signature or bearer');
 });
 
 await t('webhook URLs cannot point inward', () => {

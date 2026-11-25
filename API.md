@@ -333,7 +333,7 @@ Board admins manage agents in **Settings → Agents**, or here. A session cookie
 |--------|------|------|------|
 | GET | `/settings/agents` | — | **admin** — every agent on this board, each with its `rateLimit`. Never returns a token |
 | POST | `/settings/agents` | `{name, scope?, rateLimit?}` | **admin** — mint one. Returns `{agent, token}`, the token shown **only here**. The name is added to the board's assignee list |
-| PATCH | `/settings/agents/:id` | `{scope?, disabled?, rotate?, webhookUrl?, webhookVerbs?, rateLimit?}` | **admin** — change scope, set the write limit, disable or re-enable, rotate the token (returns the new one once; the old one stops working immediately), or set where the agent is woken. Setting `webhookUrl` returns a `webhookSecret` **once**; `null` clears it |
+| PATCH | `/settings/agents/:id` | `{scope?, disabled?, rotate?, webhookUrl?, webhookSecret?, webhookAuth?, webhookVerbs?, rateLimit?}` | **admin** — change scope, set the write limit, disable or re-enable, rotate the token (returns the new one once; the old one stops working immediately), or set where the agent is woken. Setting `webhookUrl` returns a `webhookSecret` **once**; `null` clears it and resets `webhookAuth` to `signature`. `webhookAuth` is `signature` (default) or `bearer`, anything else is a 422 `{field, error}`; see *Being woken* |
 | DELETE | `/settings/agents/:id` | — | **admin** — remove it. Notes and events keep its name |
 
 Names are 2–40 characters of `a-z 0-9 . _ -` with no spaces, because the name is also a
@@ -397,6 +397,15 @@ X-Hub-Signature-256: the same value again, under GitHub's header name
 **Verify the signature.** It is `HMAC-SHA256` of the exact bytes of the body, keyed with the
 secret you were shown when the URL was set, compared in constant time. An unsigned or
 mis-signed call did not come from the board.
+
+**Bearer mode.** Some receivers, such as an automation platform's own webhook endpoint,
+authenticate with a plain API key in an `Authorization` header and ignore signature headers
+(sending only `X-Hub-Signature-256` gets a 401). For those, an admin sets `webhookAuth` to
+`bearer` and supplies the key as `webhookSecret`. Each delivery then carries
+`Authorization: Bearer <key>` instead of `X-Board-Signature` and `X-Hub-Signature-256`;
+`X-Board-Event`, `X-Board-Delivery`, `Content-Type` and the body are unchanged. The key is on
+the wire every time, where a signature is only a proof of it, so `signature` stays the
+default. `GET /settings/agents` shows the mode as `webhookAuth`, never the secret.
 
 **You are never woken by your own writes.** That is what stops two agents waking each other
 forever over a card they are both working on.
