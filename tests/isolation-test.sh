@@ -155,6 +155,9 @@ login() { # username password jar -> http code
 names_of() { curl -s -H "$1" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"]["names"]))'; }
 JBJ_NAMES=$(names_of "$JBJ")
 IND_NAMES=$(names_of "$IND")
+# The plan checks edit jbj's tagline to prove a board admin can still change ordinary
+# settings, so remember it and put it back with the names.
+JBJ_TAGLINE=$(curl -s -H "$JBJ" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"].get("tagline","")))')
 
 JT="X-Tenant: jbj"
 IT="X-Tenant: inditress"
@@ -286,13 +289,21 @@ echo "-- usernames"
 check "bad username -> 400" 400 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users -d '{"username":"no spaces"}')"
 check "admin key cannot reach a person who is not on the named board" 404 "$(code -H "$ADM" -H "$IT" -X DELETE $B/api/settings/users/$MEMBER_ID)"
 
+# The logout above killed this session, and every -b $JAR check below it was quietly
+# testing "no cookie" rather than what its name claims. Sign back in, and make them an
+# admin of jbj, so the checks that follow exercise a real board admin.
+MEMBER_PW2=$(echo "$RESET" | jget 'd["password"]')
+check "the member signs back in" 200 "$(login zz-test-member "$MEMBER_PW2" $JAR)"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":true}'
+check "and is now an admin of jbj" True "$(curl -s -b $JAR -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
+
 echo "== master admin"
 # A signed-in board admin is not a master admin: managing boards is a separate thing from
 # running one, and must not leak from the latter.
-check "a board member cannot list boards" 401 "$(code -b $JAR $B/api/admin/tenants)"
-check "a board member cannot create a board" 401 "$(code -X POST -b $JAR -H "$CT" $B/api/admin/tenants -d '{"slug":"zz-sneak","name":"x","config":{"names":"a"}}')"
-check "a board member cannot delete a board" 401 "$(code -X DELETE -b $JAR -H "$CT" $B/api/admin/tenants/jbj -d '{"confirm":"jbj"}')"
-check "a board member cannot join a board" 401 "$(code -X POST -b $JAR $B/api/admin/tenants/inditress/join)"
+check "a board admin cannot list boards" 401 "$(code -b $JAR $B/api/admin/tenants)"
+check "a board admin cannot create a board" 401 "$(code -X POST -b $JAR -H "$CT" $B/api/admin/tenants -d '{"slug":"zz-sneak","name":"x","config":{"names":"a"}}')"
+check "a board admin cannot delete a board" 401 "$(code -X DELETE -b $JAR -H "$CT" $B/api/admin/tenants/jbj -d '{"confirm":"jbj"}')"
+check "a board admin cannot join a board" 401 "$(code -X POST -b $JAR $B/api/admin/tenants/inditress/join)"
 check "a passphrase cannot list boards" 401 "$(code -H "$JBJ" $B/api/admin/tenants)"
 
 echo "-- creating and deleting a board"
@@ -423,7 +434,10 @@ check "plan config is valid json" OK "$(printf '%s' "$PLANCFG$NOPLAN" | python3 
 
 check "a board without a plan has no tracker" 404 "$(code -H "$IND" $B/api/tracker)"
 check "a board admin cannot set the plan" 403 "$(code -X PATCH -b $JAR -H "$JT" -H "$CT" $B/api/settings -d "$PLANCFG")"
-check "the admin key can" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d "$PLANCFG")"
+# The contrast is the point: the same admin, the same endpoint, a different key. Without
+# this the check above would pass just as well if admins could not edit settings at all.
+check "but can still edit the rest of the board" 200 "$(code -X PATCH -b $JAR -H "$JT" -H "$CT" $B/api/settings -d '{"tagline":"ZZ tagline"}')"
+check "the admin key can set the plan" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d "$PLANCFG")"
 check "and the tracker opens" "ZZ Test Plan" "$(curl -s -H "$AGH" $B/api/tracker | jget 'd["plan"]["title"]')"
 check "it comes back grouped by kind" True "$(curl -s -H "$AGH" $B/api/tracker | jget "sorted(d['items'].keys()) == ['actual','decision','log','milestone','risk','status']")"
 
@@ -465,7 +479,7 @@ DEC='{"title":"ZZ decision","state":"decided","owner":"Adi","date":"2026-11-24",
 check "decision bodies are valid json" OK "$(printf '%s' "$PROP$DEC" | python3 -c 'import sys;print("OK")')"
 check "an agent may propose" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/decision/ZZ-01 -d "$PROP")"
 check "an agent may not decide" 403 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/decision/ZZ-01 -d "$DEC")"
-check "a board member may not decide" 403 "$(code -X PUT -b $JAR -H "$JT" -H "$CT" $B/api/tracker/decision/ZZ-01 -d "$DEC")"
+check "a board admin may not decide" 403 "$(code -X PUT -b $JAR -H "$JT" -H "$CT" $B/api/tracker/decision/ZZ-01 -d "$DEC")"
 check "the admin key may" 200 "$(code -X PUT -H "$ADM" -H "$JT" -H "$CT" $B/api/tracker/decision/ZZ-01 -d "$DEC")"
 check "and it reads back decided" decided "$(curl -s -H "$AGH" $B/api/tracker/decision/ZZ-01 | jget 'd["state"]')"
 
@@ -523,11 +537,13 @@ LAST=$(curl -s -X DELETE -H "$ADM" -H "$JT" $B/api/settings/users/$MEMBER_ID)
 check "jbj removes the test member" True "$(echo "$LAST" | jget 'd.get("ok") is True')"
 check "their last board going takes the account with it" True "$(echo "$LAST" | jget 'd["accountRemoved"]')"
 check "the removed person cannot sign in" 401 "$(login zz-test-member brand-new-password $JAR2)"
-RESTORE_JBJ="{\"config\":{\"names\":$JBJ_NAMES}}"
+curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":false}'
+RESTORE_JBJ="{\"config\":{\"names\":$JBJ_NAMES,\"tagline\":$JBJ_TAGLINE}}"
 RESTORE_IND="{\"config\":{\"names\":$IND_NAMES}}"
 curl -s -o /dev/null -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/jbj -d "$RESTORE_JBJ"
 curl -s -o /dev/null -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/inditress -d "$RESTORE_IND"
 check "jbj people list restored" "$JBJ_NAMES" "$(names_of "$JBJ")"
+check "jbj tagline restored" "$JBJ_TAGLINE" "$(curl -s -H "$JBJ" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"].get("tagline","")))')"
 check "inditress people list restored" "$IND_NAMES" "$(names_of "$IND")"
 rm -f $JAR $JAR2
 
