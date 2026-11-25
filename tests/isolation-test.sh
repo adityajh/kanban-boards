@@ -24,6 +24,29 @@ check() { # name expected actual
 }
 jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
 
+# Walk a board's event log to its END and print that id. /events pages FORWARD from the
+# cursor you give it and caps a page at 200, so a single read with ?limit=200 returns the
+# OLDEST 200 events and its cursor is nowhere near the end of a log that is longer than
+# that. jbj passed 300 events during this slice, which is when that stopped being a
+# theoretical distinction.
+ev_end() { # $1 = tenant slug
+  local cur=0 r more
+  while :; do
+    r=$(curl -s -H "$ADM" -H "X-Tenant: $1" "$B/api/events?since=$cur&limit=200")
+    cur=$(echo "$r" | jget 'd["cursor"]')
+    more=$(echo "$r" | jget 'd["more"]')
+    [ "$more" = "True" ] || break
+  done
+  echo "$cur"
+}
+
+# The end of jbj's log before this run writes anything. The event checks read forward from
+# here, so they assert what THIS run produced. Reading from 0 instead made them match
+# leftovers from previous runs — zz-test-agent is created with the same name every time, so
+# "the log records the agent by name" passed on last week's events and would have kept
+# passing if the logging had broken entirely.
+EV_START=$(ev_end jbj)
+
 # Before asserting anything, prove we are talking to the app at all. A protected Vercel
 # preview answers every request with a 401 SSO page, which silently turns each "-> 401"
 # check into a tautology and leaves the rest failing for reasons that look like code faults.
@@ -497,14 +520,16 @@ check "a key on another board is not found" 404 "$(code -H "$IND" $B/api/docs/zz
 check "an empty append is refused" 400 "$(code -X POST -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d '{"body":"  "}')"
 
 echo "== the event log"
-EV=$(curl -s -H "$ADM" -H "$JT" "$B/api/events?limit=200")
+EV=$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$EV_START&limit=200")
 check "the log records the agent by name" True "$(echo "$EV" | jget "any(e['actor']['name']=='zz-test-agent' for e in d['events'])")"
 check "it says what kind of actor that was" True "$(echo "$EV" | jget "any(e['actor']['kind']=='agent' for e in d['events'])")"
 check "card creation is logged" True "$(echo "$EV" | jget "any(e['verb']=='card.created' for e in d['events'])")"
 check "document appends are logged" True "$(echo "$EV" | jget "any(e['verb']=='doc.appended' for e in d['events'])")"
 check "the cursor is an id, not a time" True "$(echo "$EV" | jget "isinstance(d['cursor'], int)")"
 CUR=$(echo "$EV" | jget 'd["cursor"]')
-check "reading from the cursor returns nothing new" 0 "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$CUR" | jget 'len(d["events"])')"
+# From the END of the log, not from the cursor of one page of it.
+check "reading from the end of the log returns nothing new" 0 \
+  "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$(ev_end jbj)" | jget 'len(d["events"])')"
 curl -s -o /dev/null -X POST -H "$AGH" -H "$CT" $B/api/cards/$A_CARD/notes -d '{"body":"after the cursor"}'
 check "and picks up what happens after it" True "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$CUR" | jget "any(e['verb']=='note.added' for e in d['events'])")"
 check "another board cannot read this log" True "$(curl -s -H "$IND" "$B/api/events?limit=200" | jget "all(e['actor']['name']!='zz-test-agent' for e in d['events'])")"
@@ -624,16 +649,7 @@ check "the agent token is still live" 200 "$(code -H "$AGH" $B/api/cards)"
 # an id and caps a page at 200, so a board with a long history would otherwise hand back its
 # oldest events and every "was this logged" check would look in the wrong place.
 callw() { local r nl=$'\n'; r=$(curl -s -w '\n%{http_code}' "$@"); RC=${r##*"$nl"}; RB=${r%"$nl"*}; }
-ev_cursor() {
-  local cur=${EV_BASE:-0} r more
-  while :; do
-    r=$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$cur&limit=200")
-    cur=$(echo "$r" | jget 'd["cursor"]')
-    more=$(echo "$r" | jget 'd["more"]')
-    [ "$more" = "True" ] || break
-  done
-  echo "$cur"
-}
+ev_cursor() { ev_end jbj; }
 EV_BASE=$(ev_cursor)   # the end of the log as it stands now; later cursors walk on from here
 ev_since() { curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$1&limit=200"; }
 mkcard() { curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d "$1" | jget 'd["id"]'; }
