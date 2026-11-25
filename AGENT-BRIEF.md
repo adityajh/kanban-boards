@@ -37,18 +37,47 @@ in Zoho, code in the repo. **Where the board and a source disagree, the source w
 GET    /cards                     every card you may see, with subtasks, links and notes
 POST   /cards                     {title, status?, assignee?, tag?, due_at?}
 PATCH  /cards/:id                 moving a column is changing status
-POST   /cards/:id/notes           {body}   — signed with your name
+POST   /cards/:id/notes           {body, to?}   — signed with your name
 POST   /cards/:id/subtasks        {title}
+GET    /inbox                     what is waiting on you on this board
+POST   /cards/:id/claim           {minutes?}   — say you are working on it
+DELETE /cards/:id/claim           release it
 ```
 
 Columns are `todo`, `in_progress`, `stuck`, `review`, `done`. `stuck` sits beside
-`in_progress`: work that has started and cannot proceed. Anything outside those five
-renders in no column and is effectively lost, so do not invent one.
+`in_progress`: work that has started and cannot proceed. Any other status is `422` on
+`POST` and `PATCH`, because a card with an invented status renders in no column and would
+be lost.
 
-A card you create is `agent_only` by default — yours to work in, invisible on the team's
-board until you decide a person should see it. Set `audience: "both"` when you want it
-looked at. **A card in Review is always visible to people**, whatever its audience, because
-an approval nobody can see is a card stuck forever.
+A card you create is `agent_only` on most boards — yours to work in, invisible on the team's
+board until you decide a person should see it. A board may set its default to `both`, so
+read what `GET /cards` gives a card you just made rather than assuming. Set
+`audience: "both"` when you want it looked at. **A card in Review is always visible to
+people**, whatever its audience, because an approval nobody can see is a card stuck forever.
+
+### Being handed work
+
+Read `GET /inbox` when you start a turn and when a wake arrives. It returns `me`,
+`assigned` (your cards that are not done, soonest due first), `addressed` (up to 50 notes
+written to you, newest first, each with its card), `claims` (cards you hold a live lease
+on), `roster` and `counts`, including `overdue`. A board passphrase is nobody in
+particular, so it gets `400`.
+
+Address a note with `to`: one name, 120 characters at most, no newlines, no contact
+details (`422`). `to` is not checked against the board's people, because that list is often
+incomplete. The cost is that a misspelt name reaches nobody, so if your inbox is empty and
+you expected otherwise, compare `roster` with the name you were told to use.
+
+**A claim is a lease, not a lock.** `POST /cards/:id/claim` holds a card for `minutes`
+(default 30, at most 480). An expired lease counts as no claim, because a lock held by an
+agent that crashed mid-turn is a card nobody could touch again. Claiming a card you already
+hold extends it. If somebody else holds it you get `409` with the holder in the body: pick
+other work. A claim tells others to stay off; it does not block their edits. Moving a card
+to `done` releases it. Only the holder or a board admin can release.
+
+**`answered` is a person's tick** meaning a human has dealt with the card. It is not yours
+to maintain: setting it is `422`. Adding a note clears it, because what a person answered
+is not what you have just asked.
 
 ## The Plan — what is true
 
@@ -123,6 +152,13 @@ X-Board-Signature: sha256=<HMAC-SHA256 of the exact body, with your webhook secr
 **Verify that signature.** Anyone who learns your URL can post to it otherwise. Narrow what
 wakes you with `webhookVerbs` — `["card.moved"]` rather than every note anyone writes.
 
+**Include `card.assigned` and `note.added`.** `card.assigned` is how you learn you have been
+handed work, whether by reassignment or because a card was created already assigned to you.
+`note.added` carries `to` and `card_title`, so you can tell whether it is for you without a
+fetch. A list that leaves them out misses both, silently. `card.claimed` and
+`card.released` exist too. One `PATCH` that moves and reassigns a card emits `card.moved`
+and `card.assigned`, since they are different facts.
+
 **Either way, read the feed** on a slow timer:
 
 ```
@@ -132,6 +168,13 @@ GET /events?since=<last id you saw>
 `since` is an event **id**, not a timestamp — ids are monotonic, and a clock is not.
 Delivery is one attempt with no retry, so the feed is the thing that guarantees you miss
 nothing. Keep your cursor.
+
+## One board per token
+
+`GET /me/work` gathers a person's work across boards. An agent token gets `403` from it, and
+that is the design, not a gap. A token names one board, so a credential that reached others
+would stop being scoped. If you work several boards, you hold one token per board and read
+each board's `/inbox`.
 
 ## Two things to be careful about
 
@@ -151,10 +194,11 @@ The response says what is wrong, and it is usually right.
 | | |
 |---|---|
 | `401` | your token is wrong, disabled, or missing |
-| `403` | you are allowed on this board but not to do that — read-only scope, or deciding a decision |
+| `400` | your credential is nobody in particular (a board passphrase on `/inbox` or a claim), or the request is malformed |
+| `403` | you are allowed on this board but not to do that — read-only scope, deciding a decision, or `/me/work` |
 | `404` | it does not exist, or it is `human_only`, or it belongs to another board. These are deliberately indistinguishable |
-| `409` | somebody changed it first. Re-read and reapply |
-| `422` | the content is wrong, and the `field` says which |
+| `409` | somebody changed it first, or somebody else holds the claim. Re-read and reapply, or pick other work |
+| `422` | the content is wrong, and the `field` says which — an invented status, contact details, `answered`, a bad `to` or `minutes` |
 
 A `500` is a fault in the board, not in your request. Report it with the status line, the
 headers and the body — a description of it is not enough to act on.

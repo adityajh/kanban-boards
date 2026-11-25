@@ -53,7 +53,7 @@ export const POST = withTenant(async (req, { params }, t, c) => {
   const refused = decisionRefusal(kind, data, c);
   if (refused) return json({ error: refused }, 403);
 
-  const audience = b.audience || defaultAudience(c);
+  const audience = b.audience || defaultAudience(c, t);
   if (!AUDIENCES.includes(audience)) {
     return json({ error: `audience must be one of ${AUDIENCES.join(', ')}` }, 400);
   }

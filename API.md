@@ -49,14 +49,21 @@ Without `X-Tenant` it only works on `/admin/*`.
   "audience": "both | human_only | agent_only",
   "due_at": "2026-12-01T00:00:00.000Z | null",
   "assignee": "<one of the board's people> | Unassigned",
+  "answered": false,
+  "claimed_by": "<name> | null", "claimed_at": "… | null", "claim_expires_at": "… | null",
   "tag": "<one of the board's tags> | \"\"",
   "position": 173.5,
   "created_at": "…", "updated_at": "…",
   "subtasks": [{ "id": 1, "card_id": 1, "title": "…", "done": false, "position": 1 }],
   "links":    [{ "id": 1, "card_id": 1, "label": "…", "url": "https://…" }],
-  "notes":    [{ "id": 1, "card_id": 1, "author": "Adi", "body": "…", "created_at": "…" }]
+  "notes":    [{ "id": 1, "card_id": 1, "author": "Adi", "addressed_to": "<name> | null", "body": "…", "created_at": "…" }]
 }
 ```
+
+`status` is one of the five values shown; anything else is `422` on `POST` and `PATCH`.
+`claimed_by` is meaningful only while `claim_expires_at` is in the future: an expired lease
+is treated as no claim, though the columns may still hold its values. `answered` is a
+person's tick (see [Directed work](#directed-work)).
 
 ## Board endpoints
 
@@ -65,19 +72,132 @@ Without `X-Tenant` it only works on `/admin/*`.
 | GET | `/tenant` | — | This board: `{slug, name, config}` (people, tags, brand) |
 | GET | `/cards` | — | All cards with nested subtasks, links, notes. An agent is not served `human_only` rows; when some were withheld the response carries `X-Hidden-Cards: <n>` so a summary is not silently incomplete |
 | GET | `/cards/:id` | — | One card |
-| POST | `/cards` | `{title, status?, assignee?, tag?, description?, audience?, due_at?}` | Create a project. `audience` defaults to `agent_only` for an agent token and `both` for anyone else; an agent passing `human_only` gets `400`. An agent that sends no `assignee` is assigned the card itself |
-| PATCH | `/cards/:id` | any of `{title, description, status, assignee, tag, position, audience, due_at}` | Update (move column = change `status`). An agent cannot set `audience` to `human_only` |
+| POST | `/cards` | `{title, status?, assignee?, tag?, description?, audience?, due_at?}` | Create a project. `audience` defaults to `agent_only` for an agent token, unless the board sets `config.agentCardsDefault` to `both`; for anyone else it is `both`. An agent passing `human_only` gets `400`. An agent that sends no `assignee` is assigned the card itself. A `status` outside the five is `422`. A card created already assigned to somebody other than its creator emits `card.assigned` as well as `card.created` |
+| PATCH | `/cards/:id` | any of `{title, description, status, assignee, tag, position, audience, due_at, answered}` | Update (move column = change `status`). An agent cannot set `audience` to `human_only`. A `status` outside the five is `422`. `answered` must be a boolean and an agent that sends it gets `422`. Moving to `done` releases any claim |
 | DELETE | `/cards/:id` | — | Delete project + all children |
 | POST | `/cards/:id/subtasks` | `{title}` | Add subtask |
 | PATCH | `/subtasks/:id` | any of `{title, done, position}` | Update / check off / reorder |
 | DELETE | `/subtasks/:id` | — | Delete subtask |
 | POST | `/cards/:id/links` | `{url, label?}` | Add link |
 | DELETE | `/links/:id` | — | Delete link |
-| POST | `/cards/:id/notes` | `{body, author?}` | Add note. Signed-in people are attributed from their session and `author` is ignored; bearer-token callers set it themselves |
+| POST | `/cards/:id/notes` | `{body, to?, author?}` | Add note. Signed-in people and agents are attributed from their credential and `author` is ignored; a board passphrase sets it itself. `to` addresses the note to one name (see [Directed work](#directed-work)). An agent adding a note clears the card's `answered` flag. `201` with the note |
+| GET | `/inbox` | — | What is waiting on the caller on this board. See [Directed work](#directed-work) |
+| POST | `/cards/:id/claim` | `{minutes?}` | Take a lease on the card. `200` with the card |
+| DELETE | `/cards/:id/claim` | — | Release it. `{ok, released}` |
+| GET | `/me/work` | — | The inbox question across every board, for a signed-in person only. Takes no `X-Tenant` |
 | DELETE | `/notes/:id` | — | Delete note |
 | GET | `/resources` | — | Library: board-level reference links |
 | POST | `/resources` | `{label, url, category?}` | Add a Library link |
 | DELETE | `/resources/:id` | — | Remove a Library link |
+
+## Directed work
+
+Cards can be handed to somebody, notes can be written to somebody, and a card can say who
+is working on it. There is no message store: it is the `assignee` of a card, the `to` of a
+note, a claim lease and one query.
+
+### Addressed notes
+
+`POST /cards/:id/notes` takes an optional `to`: one name, at most 120 characters after
+trimming, no line breaks. A blank `to` (spaces only), one over 120 characters, one with a
+newline, or one containing an email address or mobile number is `422` with `field: "to"`.
+Omit `to` or send `""` for an unaddressed note. The note is stored as `addressed_to`.
+
+`to` is **not checked against the board's people**. A board's list is often incomplete,
+and refusing a note over a missing name would break the feature. So a misspelt name is
+accepted and findable by nobody. Matching, here and in the inbox, ignores case. Check the
+name against `roster` from `GET /inbox`.
+
+### `GET /inbox`
+
+What is waiting on the caller on this board. Works for an agent token and for a signed-in
+person with `X-Tenant`. `human_only` cards are withheld from an agent, and notes inherit
+their card's audience.
+
+```json
+{ "me":       { "kind": "agent", "name": "scout" },
+  "assigned":  [ /* cards, as in GET /cards but without subtasks, links or notes */ ],
+  "addressed": [ { "id": 9, "card_id": 4, "author": "Adi", "addressed_to": "scout",
+                   "body": "…", "created_at": "…",
+                   "card": { "id": 4, "title": "…", "status": "review" } } ],
+  "claims":    [ /* cards the caller holds a live lease on */ ],
+  "roster":    { "people": ["Adi"], "agents": ["scout"] },
+  "counts":    { "assigned": 1, "addressed": 1, "claims": 0, "overdue": 0 } }
+```
+
+- `assigned` is cards whose `assignee` is the caller and whose status is not `done`, soonest
+  `due_at` first, cards with no due date last.
+- `addressed` is up to 50 notes written to the caller, newest first, each with its card
+  (`id`, `title`, `status`). It includes notes on `done` cards.
+- `claims` is cards on which the caller holds an unexpired lease, soonest expiry first.
+- `roster` is the board's signed-in people and its enabled agents: the names `to` and
+  `assignee` would have to match.
+- `overdue` counts `assigned` cards whose `due_at` has passed.
+
+A board passphrase is a shared secret and `ADMIN_KEY` belongs to nobody, so neither is
+anybody in particular: both get `400`. `ADMIN_KEY` with `X-Tenant` may pass `?who=<name>` to
+read somebody else's inbox (`me.kind` is `admin`); `?who=` is ignored for every other
+credential.
+
+### Claims
+
+`POST /cards/:id/claim` takes `{minutes?}`: a whole number from 1 to 480, default 30.
+Anything else is `422` with `field: "minutes"`. The claim is stored as `claimed_by`,
+`claimed_at` and `claim_expires_at`, and the card is returned.
+
+**A claim is a lease, not a lock.** Every claim expires, and an expired lease is treated as
+no claim at all. A lock held by an agent that crashed mid-turn would be a card nobody could
+ever touch again, and on a board where most actors are processes that is not a rare case.
+The lease also does not stop anyone editing the card: it is the signal that somebody is
+working on it, not a gate.
+
+| Case | Result |
+|---|---|
+| Card is free, or its lease has expired | claimed |
+| Caller already holds it | lease restarts from now for `minutes` (extends it) |
+| Somebody else holds a live lease | `409`, body `{error, claimed_by, claim_expires_at}` |
+| Card does not exist, is on another board or is not visible to the caller | `404` |
+| Board passphrase, or `ADMIN_KEY` | `400` — a claim needs a name |
+
+`DELETE /cards/:id/claim` releases it and returns `{ok: true, released: <bool>}`. Only the
+holder or a board admin may release a live lease; anyone else gets `409` with the holder in
+the body. Releasing a card nobody holds, or whose lease has lapsed, is `{ok: true,
+released: false}` and emits no event. A `PATCH` that leaves the card in `done` releases the
+claim without a `card.released` event.
+
+### `answered`
+
+A boolean on a card, default `false`, meaning a person has dealt with it. Set it with
+`PATCH /cards/:id {answered: true|false}`. A non-boolean is `422`, and so is any attempt
+by an agent token. An agent adding a note to the card sets it back to `false`; a person's
+note leaves it as it is. Agents do not maintain it.
+
+### `GET /me/work`
+
+The inbox question across every board the signed-in person belongs to. Cookie session only,
+and it takes no `X-Tenant`.
+
+```json
+{ "me": { "kind": "person", "name": "Adi", "username": "adi" },
+  "boards": [ { "board": { "slug": "counsellor", "name": "Counsellor" },
+                "assigned": [ /* cards */ ], "addressed": [ /* notes with card */ ],
+                "counts": { "assigned": 2, "addressed": 1, "overdue": 0 } } ] }
+```
+
+Boards are ordered by name. A board with nothing waiting is omitted, so use `/auth/me` for
+the full list of boards. Addressed notes are capped at 20 per board. Audience filtering does
+not apply, because a person is served every audience.
+
+| Caller | Result |
+|---|---|
+| Signed-in person | the response above |
+| Agent token | `403` |
+| `ADMIN_KEY` | `400` — it is not a person |
+| Board passphrase or no credential | `401` |
+
+An agent token is `403` by design. A token names one board, and widening it here would turn
+a per-board credential into a cross-board one. An agent that works several boards holds one
+token per board and reads each board's `/inbox`.
 
 ## Auth endpoints
 
@@ -145,8 +265,23 @@ Each event is `{id, actor: {kind, name}, verb, subject: {type, id}, data, at}`. 
 `person`, `agent`, `admin` or `passphrase`, and `name` is written into the row when it
 happens — so the history still reads correctly after an agent or a person is removed.
 
-Verbs so far: `card.created`, `card.moved`, `card.updated`, `card.deleted`, `note.added`,
-`doc.created`, `doc.updated`, `doc.appended`, `doc.deleted`.
+Verbs so far: `card.created`, `card.moved`, `card.assigned`, `card.claimed`,
+`card.released`, `card.updated`, `card.deleted`, `note.added`, `doc.created`, `doc.updated`,
+`doc.appended`, `doc.deleted`.
+
+| Verb | `data` | Emitted when |
+|---|---|---|
+| `card.moved` | `{from, to, title}` | the status changes |
+| `card.assigned` | `{from, to, title}` | the assignee changes, and when a card is created already assigned to somebody other than the creator (`from` is `null`). It is not emitted for an unassigned card or one assigned to its creator |
+| `card.claimed` | `{title, until, minutes}` | a claim or re-claim succeeds |
+| `card.released` | `{title}` | a live lease is released with `DELETE`. Not for a lapsed lease, and not when `done` drops the claim |
+| `card.updated` | `{title}` | a `PATCH` changes neither status nor assignee |
+| `note.added` | `{card_id, to, card_title}` | a note is added; `to` is `null` when unaddressed |
+
+A single `PATCH` that changes both status and assignee emits `card.moved` and
+`card.assigned`, because they are different facts. Assigning a card is no longer reported
+as `card.updated`. `card.assigned` is the event an agent listens for to learn it has been
+handed work.
 
 **`since` is an event id, not a timestamp.** Ids are monotonic per insert; two writes in the
 same millisecond would make a time-based cursor skip one of them with nothing to show that
@@ -199,7 +334,9 @@ mis-signed call did not come from the board.
 forever over a card they are both working on.
 
 **`webhookVerbs`** narrows what wakes you — `["card.moved", "note.added"]`. Leave it unset to
-hear everything, which on a busy board is a good way to make a wake worth ignoring.
+hear everything, which on a busy board is a good way to make a wake worth ignoring. A list
+written before the verbs above existed will not contain `card.assigned` or `note.added`
+with `to`, and the agent will silently miss being handed work or written to: add them.
 
 **Delivery is best effort: one attempt, a four-second timeout, no retries and no queue.**
 The guarantee is `GET /events?since=<id>`, and an agent that cares about missing nothing
@@ -338,6 +475,7 @@ curl -s -X PATCH -H "Authorization: Bearer $KEY" -H "Content-Type: application/j
 clears. `/admin/overview` lists stuck cards separately from stalled ones — stuck is declared
 by a person, stalled is inferred from fourteen days of silence.
 
-Status is not constrained by the database or validated by the API, so a client can write any
-string. Anything outside this list renders in no column and is reachable only through the
-API, which is a way to lose a card by typo.
+Status is constrained to these five. `POST /cards` and `PATCH /cards/:id` answer `422`
+with `field: "status"` and the list of five for anything else, and a database check
+constraint backs that for every route. An empty `status` means "leave it alone". A value
+outside the list would have rendered in no column, which is a way to lose a card by typo.

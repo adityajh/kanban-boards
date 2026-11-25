@@ -2,6 +2,7 @@ import { sql } from '../../../lib/db';
 import { json, options } from '../../../lib/http';
 import { withTenant, clean, visibleAudiences, defaultAudience, AUDIENCES } from '../../../lib/tenant';
 import { logEvent } from '../../../lib/events';
+import { statusRefusal, sameName, identityName } from '../../../lib/cards.mjs';
 export const dynamic = 'force-dynamic';
 export async function OPTIONS() { return options(); }
 
@@ -38,8 +39,10 @@ export const GET = withTenant(async (req, ctx, t, c) => {
 export const POST = withTenant(async (req, ctx, t, c) => {
   const b = await req.json().catch(() => ({}));
   if (!b.title) return json({ error: 'title required' }, 400);
+  const badStatus = statusRefusal(b.status);
+  if (badStatus) return json(badStatus, 422);
   const status = b.status || 'todo';
-  const audience = b.audience || defaultAudience(c);
+  const audience = b.audience || defaultAudience(c, t);
   if (!AUDIENCES.includes(audience)) {
     return json({ error: `audience must be one of ${AUDIENCES.join(', ')}` }, 400);
   }
@@ -56,6 +59,15 @@ export const POST = withTenant(async (req, ctx, t, c) => {
     values (${t.id}, ${b.title}, ${b.description || ''}, ${status},
             ${assignee}, ${b.tag || ''}, ${Number(max) + 1}, ${audience}, ${b.due_at || null})
     returning *`;
-  await logEvent(c, t, 'card.created', 'card', card.id, { title: card.title, status, audience });
+  await logEvent(c, t, 'card.created', 'card', card.id,
+    { title: card.title, status, audience, assignee: card.assignee });
+  // A card created already assigned to somebody else is how an agent is most often handed
+  // work, and card.created alone does not wake the assignee: only card.assigned is the
+  // event an agent listens for. Without this second event it would never learn it has work.
+  // Assigning a card to yourself, or to nobody, tells nobody anything, so those stay quiet.
+  if (card.assignee && card.assignee !== 'Unassigned' && !sameName(card.assignee, identityName(c))) {
+    await logEvent(c, t, 'card.assigned', 'card', card.id,
+      { from: null, to: card.assignee, title: card.title });
+  }
   return json({ ...clean(card), subtasks: [], links: [], notes: [] }, 201);
 });

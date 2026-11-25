@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import { timeAgo } from './util';
+import Diagram from './Diagram';
+import { splitBlocks } from '../lib/markup.mjs';
 
 // The Plan is the board's second surface: what is true, rather than what is being done.
 // Everything here comes from two places — the rows in tracker_items, and the board's own
@@ -23,10 +25,16 @@ const day = (s) => {
   const d = new Date(String(s).slice(0, 10));
   return isNaN(d) ? String(s) : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 };
+// Section links and snapshot links come from the plan config, which only a master admin
+// may write — but a scheme check costs nothing and means no config can ever put a
+// javascript: URL behind a link on this page.
+const safeHref = (h) => (/^https?:\/\//i.test(String(h || '')) ? String(h) : null);
+
 const Pill = ({ v }) => v ? <span className={'pill p-' + String(v).replace(/[^a-z-]/gi, '')}>{String(v).replace('-', ' ')}</span> : null;
 
 export default function Plan({ slug }) {
   const [data, setData] = useState(null);
+  const [docs, setDocs] = useState([]);
   const [tab, setTab] = useState('overview');
   const [err, setErr] = useState('');
 
@@ -43,6 +51,9 @@ export default function Plan({ slug }) {
   const load = useCallback(async () => {
     try { setData(await api('/tracker')); setErr(''); }
     catch (e) { setErr(e.message); }
+    // The document list is a convenience on this page, not part of it: a board with no
+    // documents, or a caller not allowed to list them, still gets the whole Plan.
+    try { setDocs(await api('/docs')); } catch { setDocs([]); }
   }, [api]);
   useEffect(() => { load(); }, [load]);
 
@@ -128,7 +139,8 @@ export default function Plan({ slug }) {
           </>
         )}
 
-        {tab === 'plan' && <Sections sections={plan.sections} periods={periods} metrics={metrics} />}
+        {tab === 'plan' && <Sections sections={plan.sections} periods={periods}
+          metrics={metrics} docs={docs} api={api} />}
 
         {tab === 'status' && (
           <>
@@ -375,7 +387,7 @@ function Log({ items, api, onPosted }) {
 
 // Static content, declared per board. A counsellor funnel carries phases and ground rules;
 // another board carries whatever it carries. The page does not know the difference.
-function Sections({ sections, periods, metrics }) {
+function Sections({ sections, periods, metrics, docs = [], api }) {
   return (
     <>
       {periods.length > 0 && metrics.length > 0 && (
@@ -405,6 +417,27 @@ function Sections({ sections, periods, metrics }) {
           {Array.isArray(s.bullets) && (
             <ul className="plain">{s.bullets.map((b, j) => <li key={j}>{b}</li>)}</ul>
           )}
+          {/* A section may carry its diagram inline, or name a board document that holds it.
+              The document form is the useful one: plan config is master-admin-only, but any
+              agent with a write token can PUT a document — so the picture can be corrected
+              by whoever notices it is wrong, without opening the board's constitution. */}
+          {s.diagram && <Diagram source={s.diagram} />}
+          {s.diagramDoc && <DocDiagram api={api} docKey={s.diagramDoc} />}
+          {Array.isArray(s.links) && s.links.length > 0 && (
+            <ul className="plain links">
+              {s.links.map((l, j) => {
+                const href = safeHref(l.href);
+                return (
+                  <li key={j}>
+                    {href
+                      ? <a href={href} target="_blank" rel="noreferrer noopener">{l.label || href}</a>
+                      : <span>{l.label || '—'}</span>}
+                    {l.note && <span className="hint"> · {l.note}</span>}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
           {Array.isArray(s.rows) && s.rows.length > 0 && (
             <div className="ascroll">
               <table className="atable">
@@ -419,7 +452,73 @@ function Sections({ sections, periods, metrics }) {
           )}
         </section>
       ))}
+      {docs.length > 0 && <Documents docs={docs} api={api} />}
     </>
+  );
+}
+
+// A diagram kept in a board document rather than in the plan config.
+function DocDiagram({ api, docKey }) {
+  const [src, setSrc] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let alive = true;
+    api('/docs/' + docKey)
+      .then(d => { if (alive) setSrc(d.body || ''); })
+      .catch(e => { if (alive) setErr(e.message); });
+    return () => { alive = false; };
+  }, [api, docKey]);
+  if (err) return <p className="hint">No document <code>{docKey}</code> to draw from ({err}).</p>;
+  if (src == null) return <p className="hint">Loading the diagram…</p>;
+  // The document may be nothing but mermaid source, or prose with the source fenced inside it.
+  const fenced = splitBlocks(src).find(b => b.kind === 'diagram');
+  return <Diagram source={fenced ? fenced.value : src} />;
+}
+
+// The board's reference text, readable here rather than only through the API — that was the
+// whole complaint. Bodies are fetched on demand: the list endpoint deliberately omits them,
+// and a board can hold a lot of them.
+function Documents({ docs, api }) {
+  const [open, setOpen] = useState(null);
+  const [body, setBody] = useState({});
+  const show = async (key) => {
+    if (open === key) { setOpen(null); return; }
+    setOpen(key);
+    if (body[key] === undefined) {
+      try { const d = await api('/docs/' + key); setBody(b => ({ ...b, [key]: d.body || '' })); }
+      catch (e) { setBody(b => ({ ...b, [key]: 'Could not load this document: ' + e.message })); }
+    }
+  };
+  return (
+    <section>
+      <h3>Documents</h3>
+      <p className="hint">
+        Reference this board keeps — roles, briefs, writing rules. Agents read and write these
+        at <code>/api/docs/&lt;key&gt;</code>; a document is what somebody re-reads, where a card
+        is work that finishes.
+      </p>
+      <ul className="plain docs">
+        {docs.map(d => (
+          <li key={d.key}>
+            <button className="linkish" onClick={() => show(d.key)} aria-expanded={open === d.key}>
+              {d.title || d.key}
+            </button>
+            <code>{d.key}</code>
+            {d.updatedBy && <span className="hint"> · {d.updatedBy}</span>}
+            {d.updatedAt && <span className="hint"> · {timeAgo(d.updatedAt)}</span>}
+            {open === d.key && (
+              body[d.key] === undefined
+                ? <p className="hint">Loading…</p>
+                : splitBlocks(body[d.key]).map((b, j) => (
+                    b.kind === 'diagram'
+                      ? <Diagram key={j} source={b.value} />
+                      : <pre key={j} className="code wrap">{b.value}</pre>
+                  ))
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

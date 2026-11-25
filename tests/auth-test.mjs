@@ -9,6 +9,11 @@ import {
 import { newAgentToken, validAgentName, SCOPES } from '../lib/agent-token.mjs';
 import { newWebhookSecret, validWebhookUrl, sign, verifySignature } from '../lib/webhook-sign.mjs';
 import { validateItem, decisionRefusal, findContactDetail, newLogId } from '../lib/tracker.mjs';
+import {
+  STATUSES, statusRefusal, sameName, identityName, leaseRefusal, claimState, claimRefusal,
+  addresseeRefusal, answeredRefusal, defaultAudienceFor,
+} from '../lib/cards.mjs';
+import { splitBlocks, hasDiagram } from '../lib/markup.mjs';
 
 let pass = 0, fail = 0;
 const t = async (name, fn) => {
@@ -247,6 +252,193 @@ await t('log ids sort by when they were made', () => {
   const b = newLogId(2000000, () => 0.1);
   assert.ok(a < b, `${a} should sort before ${b}`);
   assert.notStrictEqual(newLogId(1000000, () => 0.1), newLogId(1000000, () => 0.9));
+});
+
+console.log('== card statuses');
+await t('the five statuses are in board order', () => {
+  // The order is the column order on the board, so reordering this array silently
+  // rearranges every board; it has to be pinned, not just the membership.
+  assert.deepStrictEqual(STATUSES, ['todo', 'in_progress', 'stuck', 'review', 'done']);
+});
+await t('every valid status is accepted, and absent means leave it alone', () => {
+  for (const s of STATUSES) assert.strictEqual(statusRefusal(s), null, s);
+  for (const v of [null, undefined, '']) {
+    assert.strictEqual(statusRefusal(v), null, `${JSON.stringify(v)} must not be refused`);
+  }
+});
+await t('an invented status is refused and the refusal names the five', () => {
+  // Case matters: 'Done' renders in no column, so it is a lost card rather than a misfiled one.
+  for (const bad of ['Done', 'in progress', 'archived', 'TODO']) {
+    const r = statusRefusal(bad);
+    assert.ok(r, `${bad} should be refused`);
+    assert.strictEqual(r.field, 'status');
+    for (const s of STATUSES) assert.ok(r.error.includes(s), `refusal for ${bad} should name ${s}`);
+  }
+});
+
+console.log('== names and identity');
+await t('names compare case-insensitively and ignore surrounding space', () => {
+  assert.strictEqual(sameName('Adi', 'adi'), true);
+  assert.strictEqual(sameName(' adi ', 'Adi'), true);
+  assert.strictEqual(sameName('Adi', 'Aditya'), false);
+});
+await t('a missing name is never the same as anything', () => {
+  // Two absent names must not match each other, or an unnamed caller would "hold" every
+  // card whose holder was never recorded.
+  for (const v of [null, '', undefined]) {
+    assert.strictEqual(sameName('Adi', v), false);
+    assert.strictEqual(sameName(v, 'Adi'), false);
+    assert.strictEqual(sameName(v, v), false);
+  }
+});
+await t('only a person or an agent has a name to hold work under', () => {
+  // This decides who may hold a claim, so the nulls are the cases that matter: a shared
+  // board passphrase and ADMIN_KEY are nobody, and must not be handed a name.
+  assert.strictEqual(identityName({ person: { id: 2, display_name: 'Akshay' } }), 'Akshay');
+  assert.strictEqual(identityName({ agent: { id: 1, name: 'grok' } }), 'grok');
+  assert.strictEqual(identityName({ admin: true }), null);
+  assert.strictEqual(identityName({}), null);
+});
+
+console.log('== claims are leases');
+await t('lease length must be a whole number of minutes from 1 to 480', () => {
+  for (const ok of [undefined, null, '', 1, 30, 480]) {
+    assert.strictEqual(leaseRefusal(ok), null, `${JSON.stringify(ok)} should be allowed`);
+  }
+  for (const bad of [0, -5, 481, 1.5, 'thirty', NaN, Infinity]) {
+    const r = leaseRefusal(bad);
+    assert.ok(r, `${String(bad)} should be refused`);
+    assert.strictEqual(r.field, 'minutes');
+  }
+});
+const NOW = Date.parse('2026-11-25T12:00:00Z');
+const FUTURE = '2026-11-25T12:30:00Z';
+const PAST = '2026-11-25T11:30:00Z';
+await t('an unclaimed card has no claim', () => {
+  assert.strictEqual(claimState({}, NOW), null);
+  assert.strictEqual(claimState({ claimed_by: null, claim_expires_at: FUTURE }, NOW), null);
+  assert.strictEqual(claimState(null, NOW), null);
+});
+await t('an expired lease is not a claim', () => {
+  // This is the whole design: a crashed agent's claim must stop mattering on its own, with
+  // no timer to clean it up, so the expiry has to be tested explicitly.
+  assert.strictEqual(claimState({ claimed_by: 'grok', claim_expires_at: PAST }, NOW), null);
+});
+await t('a claim with no usable expiry is not a claim', () => {
+  // A holder with no readable end time would otherwise be a lock nobody can ever release.
+  assert.strictEqual(claimState({ claimed_by: 'grok' }, NOW), null);
+  assert.strictEqual(claimState({ claimed_by: 'grok', claim_expires_at: 'soonish' }, NOW), null);
+});
+await t('a live lease reports its holder and expiry', () => {
+  assert.deepStrictEqual(
+    claimState({ claimed_by: 'grok', claim_expires_at: FUTURE }, NOW),
+    { by: 'grok', until: FUTURE });
+});
+await t('a card is free to claim unless somebody else holds a live lease', () => {
+  const live = { claimed_by: 'Grok', claim_expires_at: FUTURE };
+  assert.strictEqual(claimRefusal({}, 'adi', NOW), null);
+  // Extending your own lease must work, and a name typed in another case is still you.
+  assert.strictEqual(claimRefusal(live, 'grok', NOW), null);
+  const r = claimRefusal(live, 'adi', NOW);
+  assert.strictEqual(typeof r, 'string');
+  assert.ok(r.includes('Grok'), 'the refusal should name the holder: ' + r);
+  assert.strictEqual(claimRefusal({ claimed_by: 'Grok', claim_expires_at: PAST }, 'adi', NOW), null);
+});
+
+console.log('== addressing and the answered flag');
+await t('an addressee is one short name or nothing', () => {
+  for (const ok of [null, undefined, '', 'Akshay', 'claude-brain']) {
+    assert.strictEqual(addresseeRefusal(ok), null, `${JSON.stringify(ok)} should be allowed`);
+  }
+  for (const bad of ['   ', 'x'.repeat(121), 'Adi\nRahul', 'Adi\rRahul']) {
+    const r = addresseeRefusal(bad);
+    assert.ok(r, `${JSON.stringify(bad)} should be refused`);
+    assert.strictEqual(r.field, 'to');
+  }
+  assert.strictEqual(addresseeRefusal('x'.repeat(120)), null);
+});
+await t('contact details cannot reach the board through an addressee', () => {
+  // The check itself lives in findContactDetail; this pins that addressing actually uses it.
+  assert.strictEqual(addresseeRefusal('adi@example.com').field, 'to');
+  assert.strictEqual(addresseeRefusal('9876543210').field, 'to');
+});
+await t('answered is a person\'s boolean and nobody else\'s', () => {
+  const person = { person: { id: 2, display_name: 'Akshay' } };
+  const agent = { agent: { name: 'X' } };
+  assert.strictEqual(answeredRefusal(null, person), null);
+  assert.strictEqual(answeredRefusal(undefined, agent), null);
+  assert.strictEqual(answeredRefusal(true, person), null);
+  assert.strictEqual(answeredRefusal(false, person), null);
+  // An agent maintaining the flag would drift on it, so even a legal value is refused.
+  assert.strictEqual(answeredRefusal(true, agent).field, 'answered');
+  for (const bad of ['yes', 1, {}]) {
+    assert.strictEqual(answeredRefusal(bad, person).field, 'answered', JSON.stringify(bad));
+  }
+});
+
+console.log('== audience default for new cards');
+await t('a person\'s cards are visible to both, whatever the board says', () => {
+  const person = { person: { id: 2, display_name: 'Akshay' } };
+  assert.strictEqual(defaultAudienceFor(person, null), 'both');
+  assert.strictEqual(defaultAudienceFor(person, { config: { agentCardsDefault: 'agent_only' } }), 'both');
+});
+await t('an agent\'s cards stay agent_only unless the board opts in to both', () => {
+  const agent = { agent: { name: 'grok' } };
+  assert.strictEqual(defaultAudienceFor(agent, null), 'agent_only');
+  assert.strictEqual(defaultAudienceFor(agent, {}), 'agent_only');
+  assert.strictEqual(defaultAudienceFor(agent, { config: {} }), 'agent_only');
+  // An unknown value falls back to the private default rather than being stored as-is.
+  assert.strictEqual(defaultAudienceFor(agent, { config: { agentCardsDefault: 'everyone' } }), 'agent_only');
+  assert.strictEqual(defaultAudienceFor(agent, { config: { agentCardsDefault: 'both' } }), 'both');
+  assert.strictEqual(defaultAudienceFor(agent, { config: { agentCardsDefault: 'agent_only' } }), 'agent_only');
+});
+
+console.log('== markup blocks');
+await t('no text means no blocks', () => {
+  assert.deepStrictEqual(splitBlocks(''), []);
+  assert.deepStrictEqual(splitBlocks(null), []);
+  assert.deepStrictEqual(splitBlocks(undefined), []);
+});
+await t('plain prose is one text block, intact', () => {
+  assert.deepStrictEqual(splitBlocks('first line\nsecond line'),
+    [{ kind: 'text', value: 'first line\nsecond line' }]);
+});
+await t('prose, a diagram and prose come back as three blocks in order', () => {
+  const src = 'flowchart TD\n  A --> B\n    B --> C';
+  const blocks = splitBlocks('before\n```mermaid\n' + src + '\n```\nafter');
+  assert.deepStrictEqual(blocks, [
+    { kind: 'text', value: 'before' },
+    { kind: 'diagram', value: src },
+    { kind: 'text', value: 'after' },
+  ]);
+});
+await t('an unclosed fence still yields its diagram', () => {
+  // Forgetting the closing ticks must not cost somebody the diagram they drew.
+  assert.deepStrictEqual(splitBlocks('intro\n```mermaid\nA --> B'), [
+    { kind: 'text', value: 'intro' },
+    { kind: 'diagram', value: 'A --> B' },
+  ]);
+});
+await t('an empty fence yields no diagram', () => {
+  assert.deepStrictEqual(splitBlocks('```mermaid\n```'), []);
+  assert.strictEqual(hasDiagram('```mermaid\n```'), false);
+});
+await t('the fence opener ignores case and surrounding whitespace', () => {
+  // The opener regex also allows space between the ticks and the word, so '``` mermaid'
+  // is a diagram too; that is the real behaviour, pinned here.
+  for (const opener of ['```Mermaid', '  ``` mermaid  ', '```MERMAID', '```mermaid']) {
+    assert.deepStrictEqual(splitBlocks(opener + '\nA --> B\n```'),
+      [{ kind: 'diagram', value: 'A --> B' }], JSON.stringify(opener));
+  }
+});
+await t('a fence of another language stays text', () => {
+  const src = '```js\nconst a = 1;\n```';
+  assert.deepStrictEqual(splitBlocks(src), [{ kind: 'text', value: src }]);
+  assert.strictEqual(hasDiagram(src), false);
+});
+await t('hasDiagram is true only when a diagram is present', () => {
+  assert.strictEqual(hasDiagram('just words'), false);
+  assert.strictEqual(hasDiagram('words\n```mermaid\nA --> B\n```'), true);
 });
 
 console.log(`\npassed ${pass}, failed ${fail}`);

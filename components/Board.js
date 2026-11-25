@@ -1,6 +1,9 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import { timeAgo, store } from './util';
+import Diagram from './Diagram';
+import { splitBlocks } from '../lib/markup.mjs';
+import { claimState, sameName } from '../lib/cards.mjs';
 
 // Stuck sits after In Progress: it is where started work goes when it cannot proceed, not a
 // step on the way to Review. One list drives the columns, the drop targets and the status
@@ -22,6 +25,14 @@ const dueLabel = (d) => new Date(d).toLocaleDateString(undefined, { day: 'numeri
 
 // Options for a select: the configured list, plus the current value if it's no longer in it.
 const withCurrent = (list, cur) => (cur && !list.includes(cur) ? [...list, cur] : list);
+
+// A lease end shown as a clock time, with the date only when it is not today: "until 14:30"
+// is what somebody deciding whether to wait needs, and a date there would only be noise.
+const untilLabel = (iso) => {
+  const d = new Date(iso);
+  const t = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? t : dueLabel(iso) + ' ' + t;
+};
 
 export default function Board({ slug }) {
   const [me, setMe] = useState(undefined); // undefined = still checking, null = signed out
@@ -46,6 +57,18 @@ export default function Board({ slug }) {
   // view filter and nothing more: the API returns them to people either way, because agent
   // work no human could see would defeat the log it is written beside.
   const [showAgent, setShowAgent] = useState(false);
+  // "Waiting on me": columns narrow to cards assigned to the signed-in person. Like the toggle
+  // above it is a view filter only; nothing about the cards or what the API returns changes.
+  const [showMine, setShowMine] = useState(false);
+  const [roster, setRoster] = useState(null);
+  // claimState() reads the clock, but nothing re-renders when a lease runs out, so a pill
+  // would keep saying "claimed" after the claim had lapsed. A slow tick is enough: a lease is
+  // minutes long, and the point is only that an expired claim stops showing as live.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     // These used to hold the shared passphrase. Per-person logins replaced it, so clear
@@ -97,6 +120,32 @@ export default function Board({ slug }) {
   const names = cfg.names || [];
   const tags = cfg.tags || [];
   const user = me?.displayName;
+  // People first, then agents, deduplicated case-insensitively so a name in both the board
+  // config and the membership list is suggested once.
+  const addressees = (() => {
+    const all = [...(roster?.people || []), ...(roster?.agents || []), ...names];
+    const seen = new Set();
+    return all.filter(n => {
+      const k = String(n).trim().toLowerCase();
+      if (!k || seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+  })();
+
+  // Who a note can be addressed to. The board's configured `names` list holds people and is
+  // often out of date, and it has never held agents at all — but addressing an agent is most
+  // of the point of `to`. The inbox endpoint already assembles the names this board really
+  // knows, from its memberships and its live agents, so the suggestions come from there and
+  // the config list is only a fallback. Fetched once per board rather than on every reload:
+  // it costs several queries and a roster does not change between two card drags.
+  useEffect(() => {
+    if (!tenant) return;
+    let live = true;
+    api('/inbox')
+      .then(d => { if (live && d?.roster) setRoster(d.roster); })
+      .catch(() => { /* an older deployment has no /inbox; the config names still work */ });
+    return () => { live = false; };
+  }, [tenant, api]);
 
   useEffect(() => {
     if (!tenant) return;
@@ -190,6 +239,21 @@ export default function Board({ slug }) {
 
   const reload = load;
 
+  // Both filters are applied here, once, so the columns and the empty-board message agree
+  // about what "visible" means. `mine` is counted before the agent filter on purpose: it lets
+  // the message tell "nothing is yours" apart from "yours is hidden behind agent work".
+  const mineAll = cards.filter(c => sameName(c.assignee, user));
+  const visible = cards
+    // A card waiting on a person stays visible whatever its audience says: an
+    // approval nobody can see is a card stuck forever.
+    .filter(c => showAgent || c.audience !== 'agent_only' || c.status === 'review')
+    .filter(c => !showMine || sameName(c.assignee, user));
+  const mineEmpty = showMine && visible.length === 0
+    ? (mineAll.length > 0
+        ? 'Everything assigned to you is agent work, which is hidden. Use "show agent work" to see it.'
+        : 'Nothing is assigned to ' + user + '. Cards are matched on the assignee name, so a card assigned under a different spelling will not appear here.')
+    : '';
+
   return (
     <>
       <div className="topbar">
@@ -201,17 +265,18 @@ export default function Board({ slug }) {
         <button className={'linkbtn' + (showAgent ? ' on' : '')}
           title="Show cards agents created for themselves"
           onClick={() => setShowAgent(v => !v)}>{showAgent ? 'hide agent work' : 'show agent work'}</button>
+        <button className={'linkbtn' + (showMine ? ' on' : '')}
+          title="Only cards assigned to you"
+          onClick={() => setShowMine(v => !v)}>mine</button>
         {cfg.plan && <a className="linkbtn" href={'/' + slug + '/plan'}>plan</a>}
         <a className="linkbtn" href={'/' + slug + '/settings'}>settings</a>
         <button className="linkbtn" onClick={signOut}>sign out</button>
       </div>
       {err && <div className="err" style={{ padding: '8px 22px' }}>{err}</div>}
+      {mineEmpty && <div className="empty boardnote">{mineEmpty}</div>}
       <div className="board">
         {COLS.map(col => {
-          const list = cards
-            // A card waiting on a person stays visible whatever its audience says: an
-            // approval nobody can see is a card stuck forever.
-            .filter(c => showAgent || c.audience !== 'agent_only' || c.status === 'review')
+          const list = visible
             .filter(c => c.status === col.id)
             .sort((a, b) => a.position - b.position);
           return (
@@ -223,6 +288,7 @@ export default function Board({ slug }) {
               <div className="cards">
                 {list.map(c => {
                   const done = c.subtasks.filter(s => s.done).length, tot = c.subtasks.length;
+                  const held = claimState(c);
                   return (
                     <div key={c.id} className="card" draggable
                       onDragStart={e => { e.stopPropagation(); window.__dragCard = c.id; }}
@@ -240,6 +306,8 @@ export default function Board({ slug }) {
                       {tot > 0 && <div className="bar"><i style={{ width: (done / tot * 100) + '%' }} /></div>}
                       <div className="assignee" style={{ marginTop: 6, fontSize: 10 }}>
                         {c.audience === 'agent_only' && <span className="pill agentpill">agent</span>}
+                        {held && <span className="pill claimpill" title={'Until ' + untilLabel(held.until)}>claimed · {held.by}</span>}
+                        {c.answered && <span className="pill answeredpill" title="A person has dealt with this">✓ answered</span>}
                         {c.due_at && <span className={'pill' + (overdue(c) ? ' late' : '')}>due {dueLabel(c.due_at)}</span>}
                         updated {timeAgo(c.updated_at)}
                       </div>
@@ -295,7 +363,7 @@ export default function Board({ slug }) {
         </div>
       </div>
 
-      {open && <Detail card={open} user={user} names={names} tags={tags} api={api} reload={reload} patchCard={patchCard} delCard={delCard} close={closeCard} />}
+      {open && <Detail card={open} user={user} names={names} addressees={addressees} tags={tags} api={api} reload={reload} patchCard={patchCard} delCard={delCard} close={closeCard} />}
     </>
   );
 }
@@ -421,7 +489,7 @@ function FirstPassword({ onDone }) {
   );
 }
 
-function Detail({ card, user, names, tags, api, reload, patchCard, delCard, close }) {
+function Detail({ card, user, names, addressees, tags, api, reload, patchCard, delCard, close }) {
   const [c, setC] = useState(card);
   useEffect(() => { setC(card); }, [card]);
   const [newSt, setNewSt] = useState('');
@@ -429,7 +497,9 @@ function Detail({ card, user, names, tags, api, reload, patchCard, delCard, clos
   const [linkUrl, setLinkUrl] = useState('');
   const [note, setNote] = useState('');
   const [confirmDel, setConfirmDel] = useState(false);
-  useEffect(() => { setConfirmDel(false); }, [card.id]);
+  const [noteTo, setNoteTo] = useState('');
+  const [msg, setMsg] = useState('');
+  useEffect(() => { setConfirmDel(false); setMsg(''); }, [card.id]);
 
   const refreshLocal = async () => { const all = await api('/cards/' + card.id); setC(all); reload(); };
 
@@ -450,9 +520,52 @@ function Detail({ card, user, names, tags, api, reload, patchCard, delCard, clos
 
   const addLink = async () => { if (!linkUrl.trim()) return; let u = linkUrl.trim(); if (!/^https?:\/\//.test(u)) u = 'https://' + u; await api('/cards/' + card.id + '/links', 'POST', { label: linkLabel.trim(), url: u }); setLinkLabel(''); setLinkUrl(''); refreshLocal(); };
   const delLink = async (l) => { await api('/links/' + l.id, 'DELETE'); refreshLocal(); };
-  const addNote = async () => { if (!note.trim()) return; await api('/cards/' + card.id + '/notes', 'POST', { author: user, body: note.trim() }); setNote(''); refreshLocal(); };
+  // `to` is left out entirely when empty rather than sent blank: the API refuses a blank
+  // addressee, and most notes are addressed to nobody.
+  const addNote = async () => {
+    if (!note.trim()) return;
+    const body = { author: user, body: note.trim() };
+    if (noteTo.trim()) body.to = noteTo.trim();
+    await api('/cards/' + card.id + '/notes', 'POST', body);
+    setNote(''); setNoteTo(''); refreshLocal();
+  };
   const delNote = async (n) => { await api('/notes/' + n.id, 'DELETE'); refreshLocal(); };
 
+  // Deliberately not something agents maintain: `answered` means a person has dealt with the
+  // card, the API refuses an agent that tries to set it, and it is cleared whenever an agent
+  // adds a note. The checkbox therefore reads straight from the card, never from state of its
+  // own, so a tick the server has cleared disappears on the next refresh instead of lingering.
+  const setAnswered = async (v) => {
+    setMsg('');
+    try { await patchCard(card.id, { answered: v }); } catch (e) { setMsg(e.message); }
+  };
+
+  // api() throws only the message, not the status, so a 409 cannot be told from other
+  // failures here. Rather than show the server's sentence (which carries a raw ISO time),
+  // re-read the card: if somebody else now holds it, say so in the board's own terms.
+  const claim = async () => {
+    setMsg('');
+    try {
+      await api('/cards/' + card.id + '/claim', 'POST', {});
+      await refreshLocal();
+    } catch (e) {
+      try {
+        const fresh = await api('/cards/' + card.id);
+        const h = claimState(fresh);
+        if (h && !sameName(h.by, user)) setMsg(h.by + ' is working on this until ' + untilLabel(h.until) + '.');
+        else setMsg(e.message);
+        setC(fresh); reload();
+      } catch { setMsg(e.message); }
+    }
+  };
+  const release = async () => {
+    setMsg('');
+    try { await api('/cards/' + card.id + '/claim', 'DELETE'); await refreshLocal(); }
+    catch (e) { setMsg(e.message); }
+  };
+
+  // An expired lease reads as no claim at all, so it offers "claim" rather than "release".
+  const held = claimState(c);
   const tagOpts = withCurrent(tags, c.tag);
 
   return (
@@ -475,6 +588,22 @@ function Detail({ card, user, names, tags, api, reload, patchCard, delCard, clos
             title="Due date"
             onChange={e => saveField('due_at', e.target.value || null)} />
         </div>
+        <div className="holdrow">
+          <label title="A person has dealt with this. Set by people only; agents do not maintain it.">
+            <input type="checkbox" checked={!!c.answered} onChange={e => setAnswered(e.target.checked)} /> answered
+          </label>
+          {held ? (
+            <>
+              <span className="claimtext">
+                {sameName(held.by, user) ? <b>You</b> : <b>{held.by}</b>} {sameName(held.by, user) ? 'are' : 'is'} working on this until {untilLabel(held.until)}
+              </span>
+              <button className="linkbtn" onClick={release}>release</button>
+            </>
+          ) : (
+            <button className="linkbtn" onClick={claim}>claim</button>
+          )}
+        </div>
+        {msg && <div className="err">{msg}</div>}
         <textarea className="desc" defaultValue={c.description} placeholder="Project description…" onBlur={e => saveField('description', e.target.value)} />
 
         <div className="section">
@@ -514,12 +643,21 @@ function Detail({ card, user, names, tags, api, reload, patchCard, delCard, clos
           <h4>Notes</h4>
           {c.notes.map(n => (
             <div key={n.id} className="note">
-              <span className="who">{n.author}</span><span className="when">{timeAgo(n.created_at)} <button className="x" onClick={() => delNote(n)}>×</button></span>
-              <div className="body">{n.body}</div>
+              <span className="who">{n.author}</span>{n.addressed_to && <span className="to">→ {n.addressed_to}</span>}<span className="when">{timeAgo(n.created_at)} <button className="x" onClick={() => delNote(n)}>×</button></span>
+              {/* Same approach as Plan: a fenced mermaid block draws, everything else is the
+                  text it always was. */}
+              {splitBlocks(n.body).map((b, i) => (
+                b.kind === 'diagram'
+                  ? <Diagram key={i} source={b.value} />
+                  : <div key={i} className="body">{b.value}</div>
+              ))}
             </div>
           ))}
           <div className="addinline">
             <input value={note} placeholder={'Add a note as ' + user + '…'} onChange={e => setNote(e.target.value)} onKeyDown={e => e.key === 'Enter' && addNote()} />
+            <input className="toinput" value={noteTo} placeholder="to (optional)" aria-label="Address this note to"
+              list="note-to-names" onChange={e => setNoteTo(e.target.value)} onKeyDown={e => e.key === 'Enter' && addNote()} />
+            <datalist id="note-to-names">{(addressees || names).map(n => <option key={n} value={n} />)}</datalist>
             <button className="btn" onClick={addNote}>Post</button>
           </div>
         </div>

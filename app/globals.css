@@ -236,3 +236,30 @@ a.linkbtn{text-decoration:none;display:inline-block}
 .planwrap .act{color:var(--accent)}
 .planwrap pre.code{font-size:12px;line-height:1.55;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:0}
 .planwrap ul.plain{margin:0;padding-left:18px;display:grid;gap:5px}
+/* Diagrams. Mermaid sizes its own SVG; the container only gives it a frame, a little room
+   and somewhere to scroll on a phone, so a wide flowchart does not stretch the page. */
+.diagram{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin:0;overflow-x:auto}
+.diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}
+.diagram.bad{border-color:#B1442F}
+.diagram.bad .hint{color:#B1442F;margin:0 0 8px}
+.diagram.bad pre.code{margin:0}
+/* A document title that opens its body: a button, because it is not a URL anybody can share,
+   but it should read as the thing you click. */
+.linkish{background:none;border:none;padding:0;font:inherit;color:var(--accent);text-align:left;cursor:pointer;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:2px}
+.linkish:hover{text-decoration-thickness:2px}
+.planwrap pre.code.wrap{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:8px}
+.planwrap ul.plain.docs{gap:10px}
+.planwrap ul.plain.docs li{display:grid;gap:4px}
+.planwrap ul.plain.docs code,.planwrap ul.plain.links code{font-size:11.5px;color:var(--ink-40)}
+.planwrap ul.plain.links{gap:7px}
+/* Claims, the answered tick, addressed notes and the "mine" filter. */
+.pill.claimpill{color:var(--accent);border-color:var(--accent)}
+.pill.answeredpill{color:#2F7A4F;border-color:#2F7A4F}
+.holdrow{display:flex;gap:8px 16px;align-items:center;flex-wrap:wrap;margin:0 0 14px;font-size:12px;color:var(--ink-60)}
+.holdrow label{display:inline-flex;gap:6px;align-items:center;font-size:10px;text-transform:uppercase;letter-spacing:.1em;cursor:pointer}
+.holdrow .claimtext b{color:var(--ink);font-weight:600}
+.note .to{font-size:11px;color:var(--ink-60);margin-left:8px;letter-spacing:.04em}
+.addinline input.toinput{flex:0 0 120px;min-width:0;width:120px;font-size:12px;color:var(--ink-60)}
+.boardnote{padding:14px 26px 0;max-width:640px;line-height:1.5}
+@media(max-width:720px){.topbar{flex-wrap:wrap;gap:8px 14px;padding:12px 16px}.boardnote{padding:12px 16px 0}}
+@media(max-width:520px){.addinline input.toinput{flex-basis:84px;width:84px}}

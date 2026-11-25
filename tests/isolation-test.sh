@@ -521,6 +521,223 @@ check "a refused url leaves the old one in place" "https://example.com/wake" "$(
 check "an agent cannot set its own webhook" 403 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/settings/agents/$AG_ID -d "$HOOK_OK")"
 check "clearing it falls back to the feed" None "$(curl -s -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"webhookUrl":null}' | jget 'd["agent"]["webhookUrl"]')"
 
+echo "== directed work: statuses, hand-overs, notes, claims, inbox"
+# Credentials, and why each is live where it is used (the cookie jar $JAR was logged out once
+# and quietly tested "no cookie" for months, so nothing below borrows a jar from earlier):
+#   ADM + JT  the master key acting on jbj. A header, not a session, so it cannot go stale.
+#   AGH       zz-test-agent (write scope, jbj). Issued in "agents have their own identity" and
+#             deleted only in "agent cleanup", which comes after this block.
+#   JAR3      a fresh cookie jar signed in below as zz-test-member, a person on jbj, not a
+#             master admin. The checks right after signing in prove it is that person.
+#   JBJ, IND  board passphrases, which name nobody.
+JAR3=$(mktemp)
+check "the member signs in afresh for these checks" 200 "$(login zz-test-member "$MEMBER_PW2" $JAR3)"
+check "and the session is the member, not a master admin" "['zz-test-member', False]" "$(curl -s -b $JAR3 $B/api/auth/me | jget "[d['user']['username'], d['user']['isMaster']]")"
+check "the agent token is still live" 200 "$(code -H "$AGH" $B/api/cards)"
+
+# callw keeps the status and the body of one request together, so a check on each does not
+# need the write sent twice. ev_cursor walks the log to its end: /events reads forward from
+# an id and caps a page at 200, so a board with a long history would otherwise hand back its
+# oldest events and every "was this logged" check would look in the wrong place.
+callw() { local r nl=$'\n'; r=$(curl -s -w '\n%{http_code}' "$@"); RC=${r##*"$nl"}; RB=${r%"$nl"*}; }
+ev_cursor() {
+  local cur=${EV_BASE:-0} r more
+  while :; do
+    r=$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$cur&limit=200")
+    cur=$(echo "$r" | jget 'd["cursor"]')
+    more=$(echo "$r" | jget 'd["more"]')
+    [ "$more" = "True" ] || break
+  done
+  echo "$cur"
+}
+EV_BASE=$(ev_cursor)   # the end of the log as it stands now; later cursors walk on from here
+ev_since() { curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$1&limit=200"; }
+mkcard() { curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d "$1" | jget 'd["id"]'; }
+
+echo "-- the status whitelist"
+check "a card created as 'archived' -> 422" 422 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz bad status","status":"archived"}')"
+check "a card created as 'Done' (wrong case) -> 422" 422 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz bad status","status":"Done"}')"
+check "a refused create leaves no card behind" False "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "any(c['title']=='zz bad status' for c in d)")"
+callw -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz stuck card","status":"stuck"}'
+check "a card created as 'stuck' -> 201" 201 "$RC"
+STK=$(echo "$RB" | jget 'd["id"]')
+check "and it files under stuck" stuck "$(echo "$RB" | jget 'd["status"]')"
+check "a card patched to 'nonsense' -> 422" 422 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$STK -d '{"status":"nonsense"}')"
+check "the 422 names the status field" status "$(curl -s -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$STK -d '{"status":"nonsense"}' | jget 'd["field"]')"
+check "a refused patch leaves the status alone" stuck "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$STK | jget 'd["status"]')"
+check "a patch with no status at all -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$STK -d '{"description":"zz no status given"}')"
+check "and leaves the status alone" stuck "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$STK | jget 'd["status"]')"
+check "while applying the field it did carry" "zz no status given" "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$STK | jget 'd["description"]')"
+
+echo "-- a hand-over is logged as card.assigned"
+AS_CARD=$(mkcard '{"title":"zz assign card"}')
+check "the fixture card starts unassigned" Unassigned "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$AS_CARD | jget 'd["assignee"]')"
+EVC=$(ev_cursor)
+check "changing only the assignee -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$AS_CARD -d '{"assignee":"zz-test-agent"}')"
+EVS=$(ev_since "$EVC")
+check "card.assigned carries from, to and title" "[('Unassigned', 'zz-test-agent', 'zz assign card')]" "$(echo "$EVS" | jget "[(e['data']['from'], e['data']['to'], e['data']['title']) for e in d['events'] if e['verb']=='card.assigned' and e['subject']['type']=='card' and int(e['subject']['id'])==$AS_CARD]")"
+EVC=$(ev_cursor)
+check "a patch changing status and assignee together -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$AS_CARD -d '{"status":"in_progress","assignee":"ZZ Test Member"}')"
+EVS=$(ev_since "$EVC")
+check "it logs card.moved and card.assigned, and no card.updated" "['card.assigned', 'card.moved']" "$(echo "$EVS" | jget "sorted(e['verb'] for e in d['events'] if e['subject']['type']=='card' and int(e['subject']['id'])==$AS_CARD)")"
+check "card.moved carries the old and new status" "[('todo', 'in_progress')]" "$(echo "$EVS" | jget "[(e['data']['from'], e['data']['to']) for e in d['events'] if e['verb']=='card.moved' and e['subject']['type']=='card' and int(e['subject']['id'])==$AS_CARD]")"
+EVC=$(ev_cursor)
+check "a title-only patch -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$AS_CARD -d '{"title":"zz assign card renamed"}')"
+EVS=$(ev_since "$EVC")
+check "a title-only patch logs card.updated and nothing else" "['card.updated']" "$(echo "$EVS" | jget "sorted(e['verb'] for e in d['events'] if e['subject']['type']=='card' and int(e['subject']['id'])==$AS_CARD)")"
+check "and does not log card.assigned" False "$(echo "$EVS" | jget "any(e['verb']=='card.assigned' for e in d['events'])")"
+
+echo "-- addressed notes"
+NC=$(mkcard '{"title":"zz notes card"}')
+EVC=$(ev_cursor)
+callw -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$NC/notes -d '{"body":"zz addressed note","to":"zz-test-agent"}'
+check "a note with a recipient -> 201" 201 "$RC"
+check "and comes back with addressed_to set" zz-test-agent "$(echo "$RB" | jget 'd["addressed_to"]')"
+EVS=$(ev_since "$EVC")
+check "note.added carries to and card_title" "[('zz-test-agent', 'zz notes card')]" "$(echo "$EVS" | jget "[(e['data']['to'], e['data']['card_title']) for e in d['events'] if e['verb']=='note.added' and int(e['data']['card_id'])==$NC]")"
+# Bodies are built in variables, and proved to say what the check below claims, because a
+# body that silently lost its long or multi-line value would turn each 422 into a pass for
+# the wrong reason.
+LONG_TO=$(python3 -c 'print("a"*130)')
+NOTE_EMAIL='{"body":"zz x","to":"someone@example.com"}'
+NOTE_LONG="{\"body\":\"zz x\",\"to\":\"$LONG_TO\"}"
+NOTE_NL='{"body":"zz x","to":"line one\nline two"}'
+check "the refused note bodies are valid json" OK "$(python3 -c 'import json,sys; [json.loads(a) for a in sys.argv[1:]]; print("OK")' "$NOTE_EMAIL" "$NOTE_LONG" "$NOTE_NL")"
+check "the long recipient really is 130 characters" 130 "$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])["to"]))' "$NOTE_LONG")"
+check "the multi-line recipient really holds a newline" True "$(python3 -c 'import json,sys; print("\n" in json.loads(sys.argv[1])["to"])' "$NOTE_NL")"
+check "a recipient containing an email address -> 422" 422 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$NC/notes -d "$NOTE_EMAIL")"
+check "a 130-character recipient -> 422" 422 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$NC/notes -d "$NOTE_LONG")"
+check "a recipient containing a newline -> 422" 422 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$NC/notes -d "$NOTE_NL")"
+check "the 422 names the to field" to "$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$NC/notes -d "$NOTE_EMAIL" | jget 'd["field"]')"
+check "refused notes were not saved" 1 "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$NC | jget 'len(d["notes"])')"
+
+echo "-- answered is a person's tick"
+AN=$(mkcard '{"title":"zz answered card"}')
+check "a card starts unanswered" False "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$AN | jget 'd["answered"]')"
+check "a person ticks answered -> 200" 200 "$(code -X PATCH -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$AN -d '{"answered":true}')"
+check "and the tick sticks" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$AN | jget 'd["answered"]')"
+check "an agent token cannot set answered -> 422" 422 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$AN -d '{"answered":true}')"
+check "the 422 names the answered field" answered "$(curl -s -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$AN -d '{"answered":false}' | jget 'd["field"]')"
+check "the refusals leave the tick in place" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$AN | jget 'd["answered"]')"
+check "an agent writes a note on the answered card -> 201" 201 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards/$AN/notes -d '{"body":"zz a fresh question from the agent"}')"
+check "and that clears answered" False "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$AN | jget 'd["answered"]')"
+check "a person ticks it again -> 200" 200 "$(code -X PATCH -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$AN -d '{"answered":true}')"
+check "a person's own note -> 201" 201 "$(code -X POST -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$AN/notes -d '{"body":"zz a person replies"}')"
+check "and leaves answered ticked" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$AN | jget 'd["answered"]')"
+
+echo "-- claims"
+CL=$(mkcard '{"title":"zz claim card"}')
+callw -X POST -H "$AGH" -H "$CT" $B/api/cards/$CL/claim -d '{}'
+check "an agent claims a free card -> 200" 200 "$RC"
+check "and claimed_by is the agent's name" zz-test-agent "$(echo "$RB" | jget 'd["claimed_by"]')"
+CLAIM_EXP1=$(echo "$RB" | jget 'd["claim_expires_at"]')
+callw -X POST -b $JAR3 -H "$JT" -H "$CT" $B/api/cards/$CL/claim -d '{}'
+check "a different credential claiming the held card -> 409" 409 "$RC"
+check "and the body names the holder" zz-test-agent "$(echo "$RB" | jget 'd["claimed_by"]')"
+check "and the error says who is working on it" True "$(echo "$RB" | jget "'zz-test-agent' in d['error']")"
+callw -X POST -H "$AGH" -H "$CT" $B/api/cards/$CL/claim -d '{"minutes":60}'
+check "the holder re-claiming -> 200" 200 "$RC"
+CLAIM_EXP2=$(echo "$RB" | jget 'd["claim_expires_at"]')
+check "and the lease is extended, not refused" True "$([[ "$CLAIM_EXP2" > "$CLAIM_EXP1" ]] && echo True || echo False)"
+check "minutes 0 -> 422" 422 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards/$CL/claim -d '{"minutes":0}')"
+check "minutes 481 -> 422" 422 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards/$CL/claim -d '{"minutes":481}')"
+check "minutes 'abc' -> 422" 422 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards/$CL/claim -d '{"minutes":"abc"}')"
+callw -X DELETE -H "$AGH" $B/api/cards/$CL/claim
+check "the holder releasing -> 200" 200 "$RC"
+check "and the body says released: true" True "$(echo "$RB" | jget 'd["released"]')"
+check "the card is free afterwards" None "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$CL | jget 'd["claimed_by"]')"
+callw -X DELETE -H "$AGH" $B/api/cards/$CL/claim
+check "releasing again is still 200" 200 "$RC"
+check "and says released: false" False "$(echo "$RB" | jget 'd["released"]')"
+check "a board passphrase claiming -> 400" 400 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$CL/claim -d '{}')"
+check "and records no claim" None "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$CL | jget 'd["claimed_by"]')"
+CD=$(mkcard '{"title":"zz claim then done card"}')
+check "an agent claims the card that will be finished -> 200" 200 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards/$CD/claim -d '{}')"
+check "and it is held before the move" zz-test-agent "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$CD | jget 'd["claimed_by"]')"
+check "moving the held card to done -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$CD -d '{"status":"done"}')"
+check "clears all three claim columns" "[None, None, None]" "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$CD | jget "[d['claimed_by'], d['claimed_at'], d['claim_expires_at']]")"
+
+echo "-- the inbox"
+IB=$(mkcard '{"title":"zz inbox card","assignee":"zz-test-agent"}')
+HO=$(mkcard '{"title":"zz human only inbox card","audience":"human_only","assignee":"zz-test-agent"}')
+check "the human_only fixture really is assigned to the agent's name" "['human_only', 'zz-test-agent']" "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$HO | jget "[d['audience'], d['assignee']]")"
+check "a note addressed to the agent on that card -> 201" 201 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$HO/notes -d '{"body":"zz hidden addressed note","to":"zz-test-agent"}')"
+check "the agent claims its inbox card -> 200" 200 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards/$IB/claim -d '{}')"
+check "an agent's inbox -> 200" 200 "$(code -H "$AGH" $B/api/inbox)"
+INBOX=$(curl -s -H "$AGH" $B/api/inbox)
+check "it carries assigned, addressed, claims, roster and counts" True "$(echo "$INBOX" | jget "all(k in d for k in ('assigned','addressed','claims','roster','counts'))")"
+check "it says whose inbox it is" "['agent', 'zz-test-agent']" "$(echo "$INBOX" | jget "[d['me']['kind'], d['me']['name']]")"
+check "a card assigned to the agent is in assigned" True "$(echo "$INBOX" | jget "any(c['id']==$IB for c in d['assigned'])")"
+check "a note addressed to the agent is in addressed" True "$(echo "$INBOX" | jget "any(n['card']['id']==$NC and n['body']=='zz addressed note' for n in d['addressed'])")"
+check "a card the agent holds is in claims" True "$(echo "$INBOX" | jget "any(c['id']==$IB for c in d['claims'])")"
+check "the roster names the agent" True "$(echo "$INBOX" | jget "'zz-test-agent' in d['roster']['agents']")"
+check "the counts agree with the lists" True "$(echo "$INBOX" | jget "d['counts']['assigned']==len(d['assigned']) and d['counts']['addressed']==len(d['addressed']) and d['counts']['claims']==len(d['claims'])")"
+check "a human_only card assigned to the agent is not in its inbox" False "$(echo "$INBOX" | jget "any(c['id']==$HO for c in d['assigned'])")"
+check "nor is a note addressed to it on that card" False "$(echo "$INBOX" | jget "any(n['card']['id']==$HO for n in d['addressed'])")"
+check "an agent cannot read someone else's inbox with ?who" zz-test-agent "$(curl -s -H "$AGH" "$B/api/inbox?who=ZZ%20Test%20Member" | jget 'd["me"]["name"]')"
+check "a board passphrase has no inbox -> 400" 400 "$(code -H "$JBJ" $B/api/inbox)"
+check "ADMIN_KEY with no ?who -> 400" 400 "$(code -H "$ADM" -H "$JT" $B/api/inbox)"
+check "ADMIN_KEY with ?who=<a name> -> 200" 200 "$(code -H "$ADM" -H "$JT" "$B/api/inbox?who=zz-test-agent")"
+check "and it reads that name's inbox" "['admin', 'zz-test-agent']" "$(curl -s -H "$ADM" -H "$JT" "$B/api/inbox?who=zz-test-agent" | jget "[d['me']['kind'], d['me']['name']]")"
+check "a signed-in person has an inbox too" "['person', 'ZZ Test Member']" "$(curl -s -b $JAR3 -H "$JT" $B/api/inbox | jget "[d['me']['kind'], d['me']['name']]")"
+check "and the card handed to them is in it" True "$(curl -s -b $JAR3 -H "$JT" $B/api/inbox | jget "any(c['id']==$AS_CARD for c in d['assigned'])")"
+
+echo "-- /me/work reads across boards, through membership only"
+check "an agent token -> 403" 403 "$(code -H "$AGH" $B/api/me/work)"
+check "no credential -> 401" 401 "$(code $B/api/me/work)"
+check "a board passphrase -> 401" 401 "$(code -H "$JBJ" $B/api/me/work)"
+check "ADMIN_KEY is not a person -> 400" 400 "$(code -H "$ADM" $B/api/me/work)"
+# The member is on jbj only at this point (removed from inditress in "leaving one board").
+# A card on inditress is assigned to their exact display name, so the only thing keeping it
+# out of /me/work is that they are not a member there; the checks after the join show the
+# same card appearing once they are, so the first absence cannot be a vacuous one.
+check "the member is on jbj only" "['jbj']" "$(curl -s -b $JAR3 $B/api/auth/me | jget "[x['slug'] for x in d['boards']]")"
+MW_IND=$(curl -s -X POST -H "$IND" -H "$CT" $B/api/cards -d '{"title":"zz me-work inditress card","assignee":"ZZ Test Member"}' | jget 'd["id"]')
+check "the inditress fixture is assigned to the member's display name" "ZZ Test Member" "$(curl -s -H "$IND" $B/api/cards/$MW_IND | jget 'd["assignee"]')"
+check "a signed-in person -> 200" 200 "$(code -b $JAR3 $B/api/me/work)"
+MW=$(curl -s -b $JAR3 $B/api/me/work)
+check "boards is an array" list "$(echo "$MW" | jget 'type(d["boards"]).__name__')"
+check "it names the person" "ZZ Test Member" "$(echo "$MW" | jget 'd["me"]["name"]')"
+check "a card assigned to them on jbj is under jbj" True "$(echo "$MW" | jget "any(c['id']==$AS_CARD for b in d['boards'] if b['board']['slug']=='jbj' for c in b['assigned'])")"
+check "a board they are not on never appears" False "$(echo "$MW" | jget "any(b['board']['slug']=='inditress' for b in d['boards'])")"
+check "nor does its card, though assigned to the same name" False "$(echo "$MW" | jget "any(c['id']==$MW_IND for b in d['boards'] for c in b['assigned'])")"
+MW_JOIN=$(curl -s -X POST -H "$ADM" -H "$IT" -H "$CT" $B/api/settings/users -d '{"username":"zz-test-member","displayName":"ZZ Test Member"}')
+check "the member joins inditress as the existing account" True "$(echo "$MW_JOIN" | jget 'd["existing"]')"
+MW=$(curl -s -b $JAR3 $B/api/me/work)
+check "on both boards, the jbj card is under jbj" True "$(echo "$MW" | jget "any(c['id']==$AS_CARD for b in d['boards'] if b['board']['slug']=='jbj' for c in b['assigned'])")"
+check "and the inditress card is under inditress" True "$(echo "$MW" | jget "any(c['id']==$MW_IND for b in d['boards'] if b['board']['slug']=='inditress' for c in b['assigned'])")"
+check "the jbj card is not under inditress" False "$(echo "$MW" | jget "any(c['id']==$AS_CARD for b in d['boards'] if b['board']['slug']=='inditress' for c in b['assigned'])")"
+check "the inditress card is not under jbj" False "$(echo "$MW" | jget "any(c['id']==$MW_IND for b in d['boards'] if b['board']['slug']=='jbj' for c in b['assigned'])")"
+check "the member leaves inditress again" 200 "$(code -X DELETE -H "$ADM" -H "$IT" $B/api/settings/users/$MEMBER_ID)"
+MW=$(curl -s -b $JAR3 $B/api/me/work)
+check "the card on a board they left drops out of /me/work" False "$(echo "$MW" | jget "any(c['id']==$MW_IND for b in d['boards'] for c in b['assigned'])")"
+check "and the jbj card is still there" True "$(echo "$MW" | jget "any(c['id']==$AS_CARD for b in d['boards'] if b['board']['slug']=='jbj' for c in b['assigned'])")"
+curl -s -o /dev/null -X DELETE -H "$IND" $B/api/cards/$MW_IND
+check "the inditress fixture card is removed" 404 "$(code -H "$IND" $B/api/cards/$MW_IND)"
+
+echo "-- the agent registry"
+check "the member's session is live for the registry checks" 200 "$(code -b $JAR3 $B/api/auth/me)"
+check "the passphrase is live for the registry checks" 200 "$(code -H "$JBJ" $B/api/cards)"
+check "ADMIN_KEY lists every agent -> 200" 200 "$(code -H "$ADM" $B/api/admin/agents)"
+REG=$(curl -s -H "$ADM" $B/api/admin/agents)
+check "the registry is not empty" True "$(echo "$REG" | jget 'len(d["agents"])>0')"
+check "every entry carries a board slug" True "$(echo "$REG" | jget "len(d['agents'])>0 and all(a.get('board',{}).get('slug') for a in d['agents'])")"
+check "the test agent is listed under jbj" True "$(echo "$REG" | jget "any(a['name']=='zz-test-agent' and a['board']['slug']=='jbj' for a in d['agents'])")"
+check "no token -> 401" 401 "$(code $B/api/admin/agents)"
+check "a board passphrase -> 401" 401 "$(code -H "$JBJ" $B/api/admin/agents)"
+check "an agent token -> 401" 401 "$(code -H "$AGH" $B/api/admin/agents)"
+check "a signed-in board member (not a master admin) -> 401" 401 "$(code -b $JAR3 $B/api/admin/agents)"
+check "the registry never carries token_hash" False "$(echo "$REG" | grep -q 'token_hash' && echo True || echo False)"
+check "the registry never carries webhook_secret" False "$(echo "$REG" | grep -q 'webhook_secret' && echo True || echo False)"
+check "nor any live token" False "$(echo "$REG" | grep -qF "$AG_TOK" && echo True || echo False)"
+
+echo "-- directed work cleanup"
+for K in $STK $AS_CARD $NC $AN $CL $CD $IB $HO; do
+  curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K
+done
+check "the directed-work fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "all(c['id'] not in [$STK,$AS_CARD,$NC,$AN,$CL,$CD,$IB,$HO] for c in d)")"
+rm -f $JAR3
+
 echo "-- agent cleanup"
 curl -s -o /dev/null -X DELETE -H "$AGH" $B/api/docs/zz/brief
 curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$A_CARD
