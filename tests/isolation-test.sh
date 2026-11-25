@@ -330,6 +330,72 @@ echo "-- the real boards are untouched by all of that"
 check "still four boards or more" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget 'len(d) >= 2')"
 check "inditress still there" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug']=='inditress' for b in d)")"
 
+echo "== boards with no passphrase"
+# Credentials, and why each is live where it is used. The shared $JAR was logged out far
+# above and signed back in later, so nothing here borrows it:
+#   ADM        the master key as a header, so it cannot go stale. Creates, patches and deletes
+#              every board below, and reads them back with X-Tenant.
+#   JARNP      a fresh cookie jar signed in below as the new board's own admin, a person who
+#              exists only on zz-nopass. The /auth/me check right after proves who it is.
+#   NP_PASS    the minted passphrase of zz-minted, the only bearer credential used for a board
+#              that has one; the last block turns it into a 401.
+#   NP_BAD     a made-up bearer string, to prove that no string at all opens a null key_hash.
+NP_BAD='Authorization: Bearer zz-any-string-at-all-123456'
+NP_SLUG=zz-nopass; MI_SLUG=zz-minted; EM_SLUG=zz-empty-pass
+for S in $NP_SLUG $MI_SLUG $EM_SLUG; do   # a run that died earlier must not turn 409s into false faults
+  curl -s -o /dev/null -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/$S -d "{\"confirm\":\"$S\"}"
+done
+callw() { local r nl=$'\n'; r=$(curl -s -w '\n%{http_code}' "$@"); RC=${r##*"$nl"}; RB=${r%"$nl"*}; }
+npcreate() { # slug, optional extra body fragment such as ',"passphrase":null'
+  callw -X POST -H "$ADM" -H "$CT" $B/api/admin/tenants \
+    -d "{\"slug\":\"$1\",\"name\":\"ZZ $1\",\"config\":{\"names\":\"ZZ $1 Person\"}$2}"; }
+
+echo "-- created with an explicit null"
+npcreate $NP_SLUG ',"passphrase":null'
+check "a board with passphrase null -> 201" 201 "$RC"
+check "and the body says passphrase is null" None "$(echo "$RB" | jget 'd["passphrase"] if "passphrase" in d else "MISSING"')"
+NP_USER=$(echo "$RB" | jget 'd["admin"]["username"]'); NP_PW=$(echo "$RB" | jget 'd["admin"]["password"]')
+check "a made-up bearer token cannot open it" 401 "$(code -H "$NP_BAD" -H "X-Tenant: $NP_SLUG" $B/api/cards)"
+check "nor can one sent without X-Tenant" 401 "$(code -H "$NP_BAD" $B/api/cards)"
+check "nor another board's passphrase" 401 "$(code -H "$JBJ" -H "X-Tenant: $NP_SLUG" $B/api/cards)"
+check "the master key with X-Tenant reads it" 200 "$(code -H "$ADM" -H "X-Tenant: $NP_SLUG" $B/api/cards)"
+check "and it is the right board" "$NP_SLUG" "$(curl -s -H "$ADM" -H "X-Tenant: $NP_SLUG" $B/api/tenant | jget 'd["slug"]')"
+JARNP=$(mktemp)
+check "its admin signs in" 200 "$(login "$NP_USER" "$NP_PW" $JARNP)"
+check "and the session is that person" "$NP_USER" "$(curl -s -b $JARNP $B/api/auth/me | jget "d['user']['username']")"
+check "a signed-in member reads the board" 200 "$(code -b $JARNP -H "X-Tenant: $NP_SLUG" $B/api/cards)"
+rm -f $JARNP
+
+echo "-- the default did not change"
+npcreate $MI_SLUG ''
+check "with the key absent -> 201" 201 "$RC"
+NP_PASS=$(echo "$RB" | jget 'd["passphrase"]')
+check "a passphrase is still minted" True "$([ -n "$NP_PASS" ] && [ "$NP_PASS" != None ] && echo True || echo False)"
+check "and it opens the board" 200 "$(code -H "Authorization: Bearer $NP_PASS" $B/api/cards)"
+npcreate $EM_SLUG ',"passphrase":""'
+check "with an empty string -> 201" 201 "$RC"
+check "a passphrase is still minted for it" True "$([ -n "$(echo "$RB" | jget 'd["passphrase"] or ""')" ] && echo True || echo False)"
+
+echo "-- retiring a passphrase"
+check "rotate and removePassphrase together -> 400" 400 "$(code -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/$MI_SLUG -d '{"rotate":true,"removePassphrase":true}')"
+check "the refused request left the passphrase working" 200 "$(code -H "Authorization: Bearer $NP_PASS" $B/api/cards)"
+NP_AG=$(curl -s -X POST -H "$ADM" -H "X-Tenant: $MI_SLUG" -H "$CT" $B/api/settings/agents -d '{"name":"zz-nopass-agent","scope":"write"}')
+NP_AGH="Authorization: Bearer $(echo "$NP_AG" | jget 'd["token"]')"
+callw -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/$MI_SLUG -d '{"removePassphrase":true}'
+check "removePassphrase -> 200" 200 "$RC"
+check "and says it was removed" True "$(echo "$RB" | jget 'd["passphraseRemoved"]')"
+check "and how many agents are on the board" 1 "$(echo "$RB" | jget 'd["agentsOnBoard"]')"
+check "the old passphrase now gets 401" 401 "$(code -H "Authorization: Bearer $NP_PASS" $B/api/cards)"
+check "the agent token still works" 200 "$(code -H "$NP_AGH" $B/api/cards)"
+check "the master key still reads the board" 200 "$(code -H "$ADM" -H "X-Tenant: $MI_SLUG" $B/api/cards)"
+check "removing it again is harmless" 200 "$(code -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/$MI_SLUG -d '{"removePassphrase":true}')"
+
+echo "-- cleanup"
+for S in $NP_SLUG $MI_SLUG $EM_SLUG; do
+  check "$S is deleted" "$S" "$(curl -s -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/$S -d "{\"confirm\":\"$S\"}" | jget 'd.get("deleted",{}).get("slug","")')"
+done
+check "no test board is left behind" False "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug'] in ('$NP_SLUG','$MI_SLUG','$EM_SLUG') for b in d)")"
+
 echo "== agents have their own identity"
 # Bodies are hoisted into variables rather than built inline inside "$( … )": bash 3.2
 # mangles escaped quotes there, and a silently empty body makes a negative check pass for

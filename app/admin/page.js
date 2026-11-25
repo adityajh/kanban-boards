@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { timeAgo, store } from '../../components/util';
 
-const EMPTY_FORM = { slug: '', name: '', names: 'Adi', tags: '', accent: '#D67D2E' };
+const EMPTY_FORM = { slug: '', name: '', names: 'Adi', tags: '', accent: '#D67D2E', noPassphrase: false };
 
 export default function Admin() {
   const [key, setKey] = useState(null);
@@ -37,6 +37,9 @@ export default function Admin() {
       const r = await api('/tenants', 'POST', {
         slug: form.slug, name: form.name,
         config: { names: form.names, tags: form.tags, accent: form.accent },
+        // Only send the key when the box is ticked: an absent passphrase still mints one, so
+        // an untouched form behaves exactly as it always did.
+        ...(form.noPassphrase ? { passphrase: null } : {}),
       });
       setCreated(r); setForm(EMPTY_FORM); setErr(''); load();
     } catch (e) { setErr(e.message); }
@@ -139,13 +142,24 @@ export default function Admin() {
               <label>People (comma-separated)<input required {...field('names')} /></label>
               <label>Tags (optional)<input placeholder="A, B" {...field('tags')} /></label>
               <label>Accent<input type="color" {...field('accent')} /></label>
+              <label className="check">
+                <input type="checkbox" checked={form.noPassphrase}
+                  onChange={e => setForm(f => ({ ...f, noPassphrase: e.target.checked }))} />
+                No passphrase
+                <span className="sub">A passphrase is one shared secret that names nobody. Without one, people sign in and agents use their own tokens.</span>
+              </label>
               <button className="btn" type="submit">Create board</button>
             </form>
             {created && (
               <div className="created">
                 Created <a href={'/' + created.tenant.slug}>/{created.tenant.slug}</a>.
-                Both secrets below are shown once — copy them now.
-                <div>Passphrase (for agents): <code>{created.passphrase}</code></div>
+                {created.passphrase ? 'Both secrets below are shown once — copy them now.'
+                  : 'Anything shown below is shown once — copy it now.'}
+                {created.passphrase ? (
+                  <div>Passphrase (for agents): <code>{created.passphrase}</code></div>
+                ) : (
+                  <div>No passphrase: this board is reached by signing in, or with an agent token.</div>
+                )}
                 {created.admin && (created.admin.password ? (
                   <div>
                     Admin sign-in for <b>{created.admin.displayName}</b>:{' '}

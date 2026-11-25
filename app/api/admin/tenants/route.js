@@ -9,6 +9,18 @@ export const GET = withAdmin(async () =>
   json(await sql`select slug, name, config, created_at from tenants order by name`));
 
 // Create a board. The passphrase is returned once and only its hash is stored.
+//
+// An explicit `"passphrase": null` creates a board with no passphrase at all. A passphrase is
+// one shared secret with full read and write that names nobody: every agent holding it writes
+// as "board passphrase", any of them can sign as any other, and a leak cannot be traced to a
+// holder or revoked from one. People sign in and are named by membership, and agents hold
+// per-agent tokens that attribute, scope, rate-limit and revoke one at a time, so on a board
+// created today a passphrase is pure liability. key_hash is NULL for such a board, and since
+// null equals nothing in SQL, no bearer token can ever match it (see migration 012).
+//
+// Only a literal null opts out. An ABSENT key still mints one, exactly as before, and so does
+// an empty string: the default was deliberately left alone so that existing callers and the
+// admin screen do not change behaviour silently. Opting out is something a caller asks for.
 export const POST = withAdmin(async (req) => {
   const b = await req.json().catch(() => ({}));
   const slug = String(b.slug || '').trim().toLowerCase();
@@ -17,8 +29,9 @@ export const POST = withAdmin(async (req) => {
   if (!name) return json({ error: 'name required' }, 400);
   const config = normalizeConfig(b.config || {}, name);
   if (!config.names.length) return json({ error: 'at least one person required' }, 400);
-  const passphrase = String(b.passphrase || '').trim() || newPassphrase(slug);
-  if (passphrase.length < 12) return json({ error: 'passphrase must be at least 12 characters' }, 400);
+  const noPassphrase = b.passphrase === null;
+  const passphrase = noPassphrase ? null : (String(b.passphrase || '').trim() || newPassphrase(slug));
+  if (passphrase !== null && passphrase.length < 12) return json({ error: 'passphrase must be at least 12 characters' }, 400);
 
   // Every board is created with one admin, so there is always somebody who can sign in and
   // add the rest. Defaults to the first person listed.
@@ -41,7 +54,7 @@ export const POST = withAdmin(async (req) => {
 
   try {
     const [tenant] = await sql`insert into tenants (slug, name, key_hash, config)
-      values (${slug}, ${name}, ${hashKey(passphrase)}, ${JSON.stringify(config)}::jsonb)
+      values (${slug}, ${name}, ${passphrase === null ? null : hashKey(passphrase)}, ${JSON.stringify(config)}::jsonb)
       returning id, slug, name, config, created_at`;
 
     // If that admin already has an account, they join this board with the password they
@@ -57,7 +70,8 @@ export const POST = withAdmin(async (req) => {
       values (${admin.id}, ${tenant.id}, true)`;
 
     const { id, ...publicRow } = tenant;
-    // Passphrase and, for a new person, their password are both shown exactly once.
+    // Passphrase (null when the board has none) and, for a new person, their password are
+    // both shown exactly once.
     return json({
       tenant: publicRow,
       passphrase,
