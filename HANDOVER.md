@@ -286,7 +286,16 @@ day. Nothing in it was run against a deployment (see "Still open").
 
 ## Still open — read this before anything else
 
-1. **The old-deployment login bypass is still open, and it is the most serious thing here.**
+1. **The old-deployment login bypass: closed in practice, one check outstanding.**
+   *(Updated later on 2026-11-25. The paragraph below is the September analysis and is kept
+   because the reasoning in it is still the reasoning.)* Vercel Authentication is set to
+   **Standard Protection**, which covers the generated URL of every deployment including old
+   production ones, and Adi deleted 34 old deployments with `vercel remove board --safe`.
+   Production was verified healthy from outside afterwards. What is still missing is the one
+   check that settles it: open a deployment URL older than 16 September in a private window
+   and confirm it is gone rather than serving the old pre-auth board. If all of them were in
+   the 34, there may be no such URL left, which is itself the answer. Tracked as a card on
+   the `platform` board, in Review.
    Any Vercel deployment built before 2026-09-16 still serves the pre-auth UI against the
    live production database, and that UI needs only a board passphrase. Rotating passphrases
    does **not** close it: `KEY_PEPPER` is unchanged, so a new passphrase hashes the same on
@@ -299,16 +308,34 @@ day. Nothing in it was run against a deployment (see "Still open").
 2. **Board passphrases are live on all 7 boards**, including four that have no agents at
    all (everything except `counsellor`). 012 exists so they can be retired. See "Boards
    without a passphrase" for how, because there is no button yet.
-3. **This session's work has not been run against a deployment.** The 451 live checks in
-   `tests/isolation-test.sh` are unrun. 98 unit checks pass under plain `node`
-   (`tests/auth-test.mjs`, re-run today). Everything from 006 onward (agents, events,
-   webhooks, the Plan, directed work, rate limits, the gate, 012) is covered by checks nobody
-   has yet seen go green against a live app. Run the suite against a preview before
-   trusting any of it; to run against a protected preview you need `VERCEL_BYPASS` (README).
+3. **Done: the suite is green against production.** 480 checks, 0 failures, on commit
+   `6af5ff2`, run against `board-iota-nine.vercel.app` on 2026-11-25. 98 unit checks pass
+   under plain `node` (`tests/auth-test.mjs`). Boards were verified clean from the database
+   afterwards.
+
+   **Read this before trusting a past green run.** Getting there took six rounds, and every
+   single failure was a defect in the TESTS, not in the app — four of them checks that had
+   stopped asserting anything while still passing: a hardcoded inditress card count that
+   broke the day somebody added a real card; an expectation that a board passphrase would be
+   refused when sent with another board's `X-Tenant`, which contradicted a check twenty
+   lines above it; a people-list baseline captured before the suite's own fixtures grew that
+   list, which had been silently leaving test names in the **inditress** assignee dropdown
+   for weeks, with every run reporting success; and four event-log checks reading from the
+   start of a 338-event log, so they matched *previous* runs' events and would have passed
+   even if event logging had broken entirely. The lesson is on the `platform` board as
+   D-06: a check that cannot fail is worse than no check. When a check's name promises
+   something, assert that thing, and capture a baseline where the question is asked.
 4. **Five people have never signed in** (still on an issued password): across `admissions`,
    `inditress`, `inditress-sales`, `jbj` and `zealxle`. Same as September in kind: the issued
    values went out by WhatsApp and are the only copies. Query below.
 5. The hub registry entry on the VPS is still titled "Inditress Board".
+6. **Vercel's firewall denies some external API callers.** Probing from a cloud sandbox
+   returned `403` with `x-vercel-mitigated: deny` after a handful of requests, while the
+   full 480-check suite ran from Adi's machine without one denial. So it is IP-dependent,
+   not path- or client-dependent, and it is almost certainly what stopped Shardul's agent
+   writing to his board in an earlier session — which was wrongly put down at the time to
+   that agent's own egress proxy. Browsers are unaffected, which is why nobody noticed.
+   Tracked on the `platform` board.
 
 Closed since September: the GitHub repo and auto-deploy (done 2026-09-16); `jbj` exists and
 has people; the three-board seeding problem is moot (there are seven boards, and board
