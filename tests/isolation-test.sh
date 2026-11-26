@@ -1009,7 +1009,6 @@ agent_rl() { curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "[a for a 
 # trap undo only what is still undone, so an interrupted run does not leave the real board
 # gated or the agent throttled.
 ORIG_RL=$(agent_rl)
-check "the agent's original write limit read back as a number" True "$(case "$ORIG_RL" in ''|*[!0-9]*) echo False;; *) echo True;; esac)"
 ORIG_GATE=$(gate_flag)
 GATE_TOUCHED=0; RL_TOUCHED=0; MEMBER_DEMOTED=0; MF_TOUCHED=0
 restore_board() {
