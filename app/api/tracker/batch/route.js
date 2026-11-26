@@ -162,6 +162,25 @@ export const POST = withTenant(async (req, ctx, t, c) => {
     planned.push({ i, op, kind, itemId, row, data, audience });
   }
 
+  // ---- every card_id in the batch, verified in one query -----------------------------
+  // One query rather than one per operation: a 50-row batch should not cost 50 round trips
+  // to learn something a single `id = any(...)` answers.
+  const wantCards = [...new Set(planned
+    .filter((p) => p.data && p.data.card_id != null && p.data.card_id !== '')
+    .map((p) => Number(p.data.card_id)))];
+  if (wantCards.length) {
+    const found = await sql`select id from cards
+      where tenant_id=${t.id} and id = any(${wantCards}::int[])
+        and audience = any(${visibleAudiences(c)}::text[])`;
+    const have = new Set(found.map((r) => Number(r.id)));
+    const miss = planned.find((p) => p.data && p.data.card_id != null && p.data.card_id !== ''
+      && !have.has(Number(p.data.card_id)));
+    if (miss) {
+      return fail(miss.i, `${miss.kind}/${miss.itemId}: card ${miss.data.card_id} is not on this board`,
+        422, { field: 'card_id' });
+    }
+  }
+
   // ---- charge the agent for all of it, then write -------------------------------------
   const rl = await chargeAgentWrites(c.agent?.id, planned.length - 1);
   if (rl && rl.rl_count > rl.rate_limit) {

@@ -512,13 +512,47 @@ mechanism.
 |---|---|---|
 | `status` | a slug | `title`\*, `lane`\* (`now` `waiting` `found` `done`), `detail`, `owner`, `source`, `as_of`, `order`, `card_id` |
 | `decision` | `D-07` | `title`\*, `state`\* (`proposed` `decided` `superseded`), `owner`, `date`, `note`, `card_id`, `ref` |
-| `milestone` | a slug | `title`\*, `date`\*, `owner`, `state` (`upcoming` `done` `at-risk` `missed`), `note` |
-| `risk` | a slug | `title`\*, `level`\* (`high` `medium` `low`), `why`, `mitigation`, `owner`, `state` (`open` `watching` `closed`) |
-| `actual` | `2026-11` | `as_of`\*, `source`\*, `values` (keyed by this board's metrics), `note` |
-| `log` | generated | `text`\*, `kind` (`update` `handoff` `risk` `decision`), `ref`; `at` and `by` are set for you |
+| `milestone` | a slug | `title`\*, `date`\*, `owner`, `state` (`upcoming` `done` `at-risk` `missed`), `note`, `card_id` |
+| `risk` | a slug | `title`\*, `level`\* (`high` `medium` `low`), `why`, `mitigation`, `owner`, `state` (`open` `watching` `closed`), `card_id` |
+| `actual` | `2026-11` | `as_of`\*, `source`\*, `values` (keyed by this board's metrics), `note`, `card_id` |
+| `log` | generated | `text`\*, `kind` (`update` `handoff` `risk` `decision`), `ref`, `card_id`; `at` and `by` are set for you |
 
 \* required. An unknown field, an unknown enum value or a missing required field is `422`
 naming the field — it tells you what to fix rather than what went wrong.
+
+### `card_id`: every kind can point at the work (26 Nov)
+
+Claude-Brain's P5 asked for a `cards: []` array on every row plus a `plan_row` back-pointer
+on the card. This is one field in one direction instead: `status` and `decision` already had
+it, and it now exists on all six. Two things to keep in step is two things that can
+disagree, and nothing has yet needed a row to name more than one card.
+
+**The card must exist, be on this board, and be one the caller could read** — otherwise
+`422` naming `card_id`. A link that points at nothing is worse than no link, and resolving
+another board's card id would turn the Plan into a way to probe for them. A batch checks
+every `card_id` it carries in one query, and a bad one fails the whole batch with nothing
+written.
+
+`card_id` accepts a number or the numeric string a form would send. Nothing else — `true`
+would otherwise read as card 1.
+
+### `stale`: a row that has stopped describing the present (26 Nov)
+
+Every row comes back with `stale`, computed on read rather than stored, so the flag cannot
+itself go out of date. It is `true` when nobody has touched the row for **7 days** *and* the
+row claims to describe the present:
+
+| Kind | Goes stale? | |
+|---|---|---|
+| `status` | yes | says what is happening now, so silence makes it wrong |
+| `risk` | unless `closed` | an open risk nobody has revisited is the definition of neglected |
+| `decision` | never | October's decision is still true in July — that is the whole reason the Plan exists beside the board |
+| `actual` | never | a dated measurement of a moment; it does not rot |
+| `milestone` | never | it has its own `date` and states; *overdue* is the useful question there, and a different one |
+| `log` | never | append-only history |
+
+Half of P6. The other half was a `?q=` search over rows, which `GET /tracker` already makes
+unnecessary at 74 rows — worth revisiting at around 500.
 
 ### Three rules the API enforces
 

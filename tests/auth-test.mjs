@@ -8,7 +8,7 @@ import {
 } from '../lib/password.mjs';
 import { newAgentToken, validAgentName, SCOPES } from '../lib/agent-token.mjs';
 import { newWebhookSecret, validWebhookUrl, sign, verifySignature, secretRefusal, webhookAuthRefusal, WEBHOOK_AUTH } from '../lib/webhook-sign.mjs';
-import { validateItem, decisionRefusal, findContactDetail, newLogId } from '../lib/tracker.mjs';
+import { validateItem, decisionRefusal, findContactDetail, newLogId, isStale, STALE_AFTER_DAYS } from '../lib/tracker.mjs';
 import {
   STATUSES, statusRefusal, sameName, identityName, leaseRefusal, claimState, claimRefusal,
   addresseeRefusal, answeredRefusal, isAgentWork, approvalRefusal,
@@ -941,6 +941,78 @@ await t('periods are found by id, case-insensitively, and absent is null', () =>
   assert.strictEqual(findPeriod({}, 'q1'), null);
   assert.deepStrictEqual(planPeriods({}), []);
   assert.deepStrictEqual(planPeriods(null), []);
+});
+
+console.log('== every kind can point at a card (P5)');
+
+await t('card_id is accepted on all six kinds', () => {
+  const ok = {
+    status:    { title: 'x', lane: 'now', card_id: 12 },
+    decision:  { title: 'x', state: 'proposed', card_id: 12 },
+    milestone: { title: 'x', date: '2026-12-06', card_id: 12 },
+    risk:      { title: 'x', level: 'high', card_id: 12 },
+    actual:    { as_of: '2026-11-30', source: 'crm', card_id: 12 },
+    log:       { text: 'x', card_id: 12 },
+  };
+  for (const [kind, data] of Object.entries(ok)) {
+    assert.strictEqual(validateItem(kind, data), null, kind);
+  }
+});
+
+await t('card_id has to look like a card id', () => {
+  for (const bad of ['abc', 0, -1, 1.5, '', true, {}]) {
+    const r = validateItem('milestone', { title: 'x', date: '2026-12-06', card_id: bad });
+    if (bad === '') assert.strictEqual(r, null, 'empty means absent');
+    else assert.strictEqual(r && r.field, 'card_id', JSON.stringify(bad));
+  }
+  // A numeric string is the shape a form sends, so it is accepted rather than refused.
+  assert.strictEqual(validateItem('milestone', { title: 'x', date: '2026-12-06', card_id: '12' }), null);
+});
+
+console.log('== a row goes stale only if it claims to describe the present (P6)');
+
+const STALE_AT = Date.parse('2026-11-26T12:00:00Z');
+const daysBefore = (d) => new Date(STALE_AT - d * 86400000).toISOString();
+
+await t('the threshold is a week, and the boundary is not off by one', () => {
+  assert.strictEqual(STALE_AFTER_DAYS, 7);
+  assert.strictEqual(isStale('status', {}, daysBefore(6), STALE_AT), false);
+  assert.strictEqual(isStale('status', {}, daysBefore(7), STALE_AT), false, 'exactly 7 days is not yet stale');
+  assert.strictEqual(isStale('status', {}, new Date(STALE_AT - 7 * 86400000 - 1).toISOString(), STALE_AT), true);
+  assert.strictEqual(isStale('status', {}, daysBefore(30), STALE_AT), true);
+});
+
+await t('a status always can, because silence makes it wrong', () => {
+  assert.strictEqual(isStale('status', { lane: 'now' }, daysBefore(10), STALE_AT), true);
+  assert.strictEqual(isStale('status', { lane: 'done' }, daysBefore(10), STALE_AT), true);
+});
+
+await t('an open risk can; a closed one is a record', () => {
+  assert.strictEqual(isStale('risk', { state: 'open' }, daysBefore(10), STALE_AT), true);
+  assert.strictEqual(isStale('risk', { state: 'watching' }, daysBefore(10), STALE_AT), true);
+  assert.strictEqual(isStale('risk', {}, daysBefore(10), STALE_AT), true, 'no state yet still counts');
+  assert.strictEqual(isStale('risk', { state: 'closed' }, daysBefore(10), STALE_AT), false);
+});
+
+await t('a decision never goes stale, which is the whole point of the Plan', () => {
+  // October's decision is still true in July. That is why the Plan exists beside the board.
+  assert.strictEqual(isStale('decision', { state: 'decided' }, daysBefore(400), STALE_AT), false);
+  assert.strictEqual(isStale('decision', { state: 'proposed' }, daysBefore(400), STALE_AT), false);
+});
+
+await t('nor an actual, a log, or a milestone', () => {
+  assert.strictEqual(isStale('actual', {}, daysBefore(400), STALE_AT), false, 'a dated measurement does not rot');
+  assert.strictEqual(isStale('log', {}, daysBefore(400), STALE_AT), false, 'append-only history');
+  assert.strictEqual(isStale('milestone', { state: 'upcoming' }, daysBefore(400), STALE_AT), false,
+    'a milestone has its own date; "overdue" is a different question');
+});
+
+await t('an unreadable or missing timestamp is never stale, rather than throwing', () => {
+  assert.strictEqual(isStale('status', {}, 'not-a-date', STALE_AT), false);
+  assert.strictEqual(isStale('status', {}, null, STALE_AT), false);
+  assert.strictEqual(isStale('status', {}, undefined, STALE_AT), false);
+  assert.strictEqual(isStale('status', null, daysBefore(10), STALE_AT), true, 'no data is still a status');
+  assert.strictEqual(isStale('nonsense', {}, daysBefore(400), STALE_AT), false);
 });
 
 console.log(`\npassed ${pass}, failed ${fail}`);

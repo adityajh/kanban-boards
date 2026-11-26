@@ -708,6 +708,35 @@ check "superseding is the same rule as deciding" 200 "$(code -X PATCH -H "$AGH" 
 # The passphrase half of this rule is checked on zz-plan-board further down, which is the
 # only board that has both a plan and a passphrase.
 
+echo "-- every kind can point at a card, and the card has to exist (P5)"
+check "a milestone may name a card on this board" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m1 -d "{\"title\":\"zz ship it\",\"date\":\"2026-12-06\",\"card_id\":$J_CARD}")"
+check "and it reads back" "$J_CARD" "$(curl -s -H "$AGH" $B/api/tracker/milestone/zz-m1 | jget 'd["card_id"]')"
+check "a risk may too" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/risk/zz-r1 -d "{\"title\":\"zz a risk\",\"level\":\"high\",\"card_id\":$J_CARD}")"
+check "so may a log entry" 201 "$(code -X POST -H "$AGH" -H "$CT" $B/api/tracker/log -d "{\"text\":\"zz linked log\",\"card_id\":$J_CARD}")"
+check "and an actual" 200 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/tracker/actual/2026-11 -d "{\"card_id\":$J_CARD}")"
+# The point of P5 is not the field, it is that the link goes somewhere. A card_id naming
+# another board's card must not resolve, or the Plan becomes a way to probe for card ids.
+check "another board's card -> 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d "{\"title\":\"zz x\",\"date\":\"2026-12-06\",\"card_id\":$IND_CARD}")"
+check "the refusal names the field" card_id "$(curl -s -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d "{\"title\":\"zz x\",\"date\":\"2026-12-06\",\"card_id\":$IND_CARD}" | jget 'd["field"]')"
+check "and no such row was created" 404 "$(code -H "$AGH" $B/api/tracker/milestone/zz-m2)"
+check "a card that does not exist -> 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d '{"title":"zz x","date":"2026-12-06","card_id":99999999}')"
+check "a card_id that is not an id -> 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d '{"title":"zz x","date":"2026-12-06","card_id":"abc"}')"
+check "a boolean is not card 1 -> 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d '{"title":"zz x","date":"2026-12-06","card_id":true}')"
+check "a patch cannot smuggle one in either" 422 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m1 -d "{\"card_id\":$IND_CARD}")"
+check "the good link survived the refused patch" "$J_CARD" "$(curl -s -H "$AGH" $B/api/tracker/milestone/zz-m1 | jget 'd["card_id"]')"
+check "a batch is checked the same way" 422 "$(code -X POST -H "$AGH" -H "$CT" $B/api/tracker/batch -d "{\"ops\":[{\"op\":\"put\",\"kind\":\"risk\",\"id\":\"zz-r2\",\"title\":\"ok\",\"level\":\"low\"},{\"op\":\"put\",\"kind\":\"risk\",\"id\":\"zz-r3\",\"title\":\"bad\",\"level\":\"low\",\"card_id\":$IND_CARD}]}")"
+check "and the valid op in that batch did not land" 404 "$(code -H "$AGH" $B/api/tracker/risk/zz-r2)"
+
+echo "-- rows that claim to describe the present can go stale (P6)"
+check "a fresh status row is not stale" False "$(curl -s -H "$AGH" $B/api/tracker/status/zz-one | jget 'd["stale"]')"
+check "the flag is on every row of a list" True "$(curl -s -H "$AGH" $B/api/tracker/status | jget "len(d)>0 and all('stale' in r for r in d)")"
+check "a fresh risk is not stale either" False "$(curl -s -H "$AGH" $B/api/tracker/risk/zz-r1 | jget 'd["stale"]')"
+# Not merely false-because-new: these kinds record a moment and can never be stale, which
+# is the distinction the flag exists to draw.
+check "a decision is never stale" False "$(curl -s -H "$AGH" $B/api/tracker/decision/ZZ-01 | jget 'd["stale"]')"
+check "nor an actual" False "$(curl -s -H "$AGH" $B/api/tracker/actual/2026-11 | jget 'd["stale"]')"
+check "the whole plan carries the flag" True "$(curl -s -H "$AGH" $B/api/tracker | jget "all('stale' in r for v in d['items'].values() for r in v)")"
+
 echo "-- the log signs itself"
 check "a log entry is appended" 201 "$(code -X POST -H "$AGH" -H "$CT" $B/api/tracker/log -d '{"kind":"update","text":"ZZ did a thing"}')"
 check "signed with the caller, not the body" zz-test-agent "$(curl -s -X POST -H "$AGH" -H "$CT" $B/api/tracker/log -d '{"text":"ZZ again","by":"Adi"}' | jget 'd["by"]')"
@@ -716,7 +745,7 @@ check "plan writes reach the event log" True "$(curl -s -H "$ADM" -H "$JT" "$B/a
 check "another board sees none of this" 404 "$(code -H "$IND" $B/api/tracker/status/zz-one)"
 
 echo "-- plan cleanup"
-for K in status/zz-one actual/2026-11 actual/2026-12 decision/ZZ-01 decision/ZZ-02 decision/ZZ-03; do
+for K in status/zz-one actual/2026-11 actual/2026-12 decision/ZZ-01 decision/ZZ-02 decision/ZZ-03 milestone/zz-m1 risk/zz-r1; do
   curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/tracker/$K
 done
 for L in $(curl -s -H "$ADM" -H "$JT" $B/api/tracker/log | jget "' '.join(x['id'] for x in d)"); do

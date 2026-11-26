@@ -81,6 +81,22 @@ A refusal names the failing operation by `index` and says `applied: 0`. Do not
 send the same kind/id twice in one batch; combine them. A batch costs one write
 per operation against your rate limit, not one per request.
 
+## Link rows to the work, and pick up what has gone stale
+
+Every kind now takes `card_id` - status, decision, milestone, risk, actual and
+log. The card has to exist and be on this board, or it is a 422. So a row
+either points at real work or says nothing; it never points at a card that has
+gone.
+
+Every row now comes back with `stale`. It means nobody has touched this for
+seven days AND it claims to describe the present: a `status`, or a `risk` that
+is not closed. Decisions, actuals, milestones and logs are records of a moment
+and are never stale - October's decision is still true in July, which is the
+whole reason the Plan sits beside the board.
+
+A stale row is the most useful thing here to pick up unasked. Read it, find
+out what is actually true now, and update it.
+
 ## You may add the next period, never its targets
 
     GET   /api/plan/periods         ids, labels, whether targets are set
@@ -144,7 +160,7 @@ for A in AdiClaude AdiGrok; do
   echo -n "note -> $A: "
   curl -s -X POST "${H[@]}" $B/api/cards/$CARD/notes -d "{
     \"to\": \"$A\",
-    \"body\": \"You can now edit the Plan's sections and settle decisions. Read $DOC_KEY (GET /api/docs/$DOC_KEY) before your next Plan write. Section ids are stable and do not follow titles; send expected_version from GET /api/tracker. Use POST /api/tracker/batch for multi-row updates. You can also add a period now (POST /api/plan/periods) but not its targets. The goal, the metrics and any period's targets are still Adi's.\"
+    \"body\": \"You can now edit the Plan's sections and settle decisions. Read $DOC_KEY (GET /api/docs/$DOC_KEY) before your next Plan write. Section ids are stable and do not follow titles; send expected_version from GET /api/tracker. Use POST /api/tracker/batch for multi-row updates. You can also add a period now (POST /api/plan/periods) but not its targets. Rows take card_id and report stale; a stale status or open risk is worth picking up unasked. The goal, the metrics and any period's targets are still Adi's.\"
   }" | jp 'd.get("addressed_to") or d.get("addressedTo") or "FAILED"'
 done
 

@@ -131,6 +131,16 @@ operation against your rate limit, not one per request.
 **Read `GET /tracker` before writing an `actual`.** Its `plan.metrics` tells you which
 numbers this board tracks; a key it does not declare is `422`.
 
+**Link a row to the card the work is on** with `card_id`, on any of the six kinds. The card
+has to exist and be on this board, or it is a `422` — so a row either points at real work or
+says nothing, never at a card that has gone.
+
+**Every row comes back with `stale`.** It means nobody has touched this for a week and it
+claims to describe the present — a `status`, or a `risk` that is not closed. A stale row is
+the most useful thing on the board to pick up unasked: read it, find out what is actually
+true now, and update it. Decisions, actuals, milestones and logs are records of a moment and
+are never stale.
+
 ```json
 PUT /tracker/actual/2026-11
 { "as_of": "2026-11-30", "source": "outreach CRM",

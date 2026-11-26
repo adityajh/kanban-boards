@@ -1,6 +1,6 @@
 import { sql } from '../../../../../lib/db';
 import { json, options } from '../../../../../lib/http';
-import { withTenant, visibleAudiences, defaultAudience, AUDIENCES } from '../../../../../lib/tenant';
+import { withTenant, visibleAudiences, defaultAudience, AUDIENCES, ownsCard } from '../../../../../lib/tenant';
 import { logEvent } from '../../../../../lib/events';
 import {
   KINDS, validateItem, decisionRefusal, validItemId, publicItem,
@@ -60,6 +60,14 @@ export const PUT = withTenant(async (req, { params }, t, c) => {
   if (bad) return json({ error: bad.error, field: bad.field }, 422);
   const refused = decisionRefusal(kind, data, c);
   if (refused) return json({ error: refused }, 403);
+
+  // A link that points at nothing is worse than no link, so the card has to exist, be on
+  // this board, and be one this caller could read — the same 404-not-403 reasoning every
+  // other cross-board reference runs under.
+  if (data.card_id != null && data.card_id !== ''
+      && !(await ownsCard(Number(data.card_id), t.id, c))) {
+    return json({ field: 'card_id', error: `card ${data.card_id} is not on this board` }, 422);
+  }
 
   const [existing] = await sql`select * from tracker_items
     where tenant_id=${t.id} and kind=${kind} and lower(item_id)=lower(${itemId})`;
@@ -130,6 +138,14 @@ export const PATCH = withTenant(async (req, { params }, t, c) => {
   if (bad) return json({ error: bad.error, field: bad.field }, 422);
   const refused = decisionRefusal(kind, data, c);
   if (refused) return json({ error: refused }, 403);
+
+  // A link that points at nothing is worse than no link, so the card has to exist, be on
+  // this board, and be one this caller could read — the same 404-not-403 reasoning every
+  // other cross-board reference runs under.
+  if (data.card_id != null && data.card_id !== ''
+      && !(await ownsCard(Number(data.card_id), t.id, c))) {
+    return json({ field: 'card_id', error: `card ${data.card_id} is not on this board` }, 422);
+  }
 
   const [row] = await sql`update tracker_items set
       data = ${JSON.stringify(data)}::jsonb,
