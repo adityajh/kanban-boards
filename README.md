@@ -119,11 +119,21 @@ node tests/auth-test.mjs                    # password hashing and cookies, no D
 bash tests/isolation-test.sh <base-url>     # tenant isolation + auth, against a running app
 ```
 
-The second needs `INDITRESS_PASSPHRASE`, `JBJ_PASSPHRASE` and `ADMIN_KEY` in the environment.
+The second needs only `ADMIN_KEY`. It mints a write-scoped agent token on each of the two
+boards it touches, and creates a throwaway board **with** a passphrase for the ~20 checks
+that are about what a passphrase cannot do; all three are destroyed before the run ends, and
+a run that dies leaves them to be cleaned up by the next one.
+
+It used to need the two board passphrases as well, which is the only reason `inditress` and
+`jbj` still had one after the other boards were retired: a shared secret with full read and
+write, naming nobody, kept alive so a test file could authenticate. Those values then went
+missing, which is what a secret with no owner and no other use tends to do.
 To run it against a **preview** deployment, also set `VERCEL_BYPASS` to the project's
 Protection Bypass for Automation secret (Vercel → Settings → Deployment Protection) —
 otherwise Vercel answers every request with an SSO redirect instead of the app, and the
 whole suite fails in ways that look like code faults. Previews read the `dev` database, so
 Inditress counts there reflect whenever `dev` was last refreshed.
-It creates and deletes its own throwaway card and user on JBJ, and only reads Inditress.
+It creates and deletes its own cards, user, agent tokens and throwaway boards, captures both
+boards' people lists **before** it adds anything, and checks the restore rather than firing it
+blind — a silent restore that fails is how test names once sat on a real board for weeks.
 Re-run it after any change to auth or a route.

@@ -65,8 +65,14 @@ now errors instead of silently landing on Inditress. `tenant_id` remains NOT NUL
 
 ## Secrets and access
 
-- `~/Documents/Claude/Credentials/kanban-boards.env` (chmod 600): `KEY_PEPPER`, `ADMIN_KEY`,
-  `INDITRESS_PASSPHRASE`, `JBJ_PASSPHRASE`. Nothing else holds these.
+- `~/Documents/Claude/Credentials/kanban-boards.env` (chmod 600): `KEY_PEPPER`, `ADMIN_KEY`.
+  Nothing else holds these.
+- The file may still list `INDITRESS_PASSPHRASE` and `JBJ_PASSPHRASE`. **Nothing needs them
+  any more.** The live test suite was the last thing that did, and since 26 Nov it mints its
+  own agent tokens from `ADMIN_KEY` instead. Once a full run has passed, those two boards'
+  passphrases can be retired like the other four
+  (`PATCH /api/admin/tenants/<slug>` with `{"removePassphrase": true}`), which would leave
+  `counsellor` as the only board holding one.
 - **Changing `KEY_PEPPER` invalidates every board passphrase.** There is no recovery path
   short of rotating each board via the admin API.
 - Neon project `Inditress-board` = `billowing-sun-22052519` (org `org-twilight-heart-58179471`).

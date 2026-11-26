@@ -1,12 +1,20 @@
 #!/bin/bash
 # Tenant-isolation + regression checks for kanban-boards. Usage: isolation-test.sh <base-url>
-# Needs INDITRESS_PASSPHRASE, JBJ_PASSPHRASE, ADMIN_KEY in the environment.
+# Needs ADMIN_KEY in the environment, and nothing else.
+#
+# It used to need the inditress and jbj passphrases too, which is why those two boards still
+# had one long after the other four were retired: a shared secret with full read and write,
+# naming nobody, kept alive solely so this file could authenticate. Adi then lost the values,
+# which is the failure mode a secret with no owner and no other use was always going to have.
+#
+# So the suite now mints what it needs through the API and throws it away afterwards: a
+# write-scoped agent token on each of the two boards, and one throwaway board WITH a
+# passphrase for the ~20 checks that are about passphrase behaviour itself.
 B="${1:-http://localhost:3100}"
 B="${B%/}"   # a trailing slash would double up in every path below
 PASS=0; FAIL=0
-IND="Authorization: Bearer $INDITRESS_PASSPHRASE"
-JBJ="Authorization: Bearer $JBJ_PASSPHRASE"
 ADM="Authorization: Bearer $ADMIN_KEY"
+# IND, JBJ and PBK are minted under "== credentials" below, once the app is known to answer.
 CT="Content-Type: application/json"
 
 # Vercel protects preview deployments, so a bare curl gets an SSO redirect rather than the
@@ -77,6 +85,65 @@ if [ "$PRE" != "401" ] || ! echo "$PRE_BODY" | grep -q '"error"'; then
   exit 1
 fi
 
+echo "== credentials"
+# A board's roster is read with ADMIN_KEY rather than a board credential, because the
+# cleanup at the bottom compares the roster AFTER deleting the agent whose token would
+# otherwise be doing the reading.
+names_of() { curl -s -H "$ADM" -H "X-Tenant: $1" $B/api/tenant \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"]["names"]))'; }
+
+# Captured BEFORE the agents are minted. Creating an agent appends its name to the board's
+# people list by design (app/api/settings/agents/route.js), so a baseline taken afterwards
+# would carry the suite's own agent into the restore and leave it there for good — which is
+# exactly how "ZZ Test Member" sat on the inditress board for weeks.
+JBJ_NAMES=$(names_of jbj)
+IND_NAMES=$(names_of inditress)
+JBJ_TAGLINE=$(curl -s -H "$ADM" -H "X-Tenant: jbj" $B/api/tenant \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"].get("tagline","")))')
+
+# The limit is raised to the maximum because this suite makes far more than 120 writes a
+# minute and the throttle is not what is under test here; the throttle has its own section
+# at the bottom, with its own agent at the default.
+mint() { # $1 = board slug, $2 = agent name -> prints the token
+  curl -s -X POST -H "$ADM" -H "X-Tenant: $1" -H "$CT" $B/api/settings/agents \
+    -d "{\"name\":\"$2\",\"scope\":\"write\",\"rateLimit\":10000}" \
+    | jget 'd.get("token","")'; }
+agent_id_of() { curl -s -H "$ADM" -H "X-Tenant: $1" $B/api/settings/agents \
+  | jget "([a['id'] for a in d if a['name']=='$2'] or [''])[0]"; }
+
+for S in inditress jbj; do
+  curl -s -o /dev/null -X DELETE -H "$ADM" -H "X-Tenant: $S" \
+    $B/api/settings/agents/$(agent_id_of $S zz-suite-$S) 2>/dev/null
+done
+# A token cannot be minted on a board that does not exist, so the bootstrap that used to
+# sit under "== jbj board" runs here instead. It creates the board with NO passphrase, which
+# is the policy for any board made since migration 012.
+if [ "$(code -H "$ADM" -H "X-Tenant: jbj" $B/api/tenant)" != 200 ]; then
+  check "admin creates the missing jbj board" 201 "$(code -X POST -H "$ADM" -H "$CT" $B/api/admin/tenants \
+    -d '{"slug":"jbj","name":"JBJ Jeweller","passphrase":null,"config":{"brand":"JBJ Jeweller","names":"Adi, Rahul","accent":"#9C7A3C"}}')"
+fi
+
+IND_TOK=$(mint inditress zz-suite-inditress)
+JBJ_TOK=$(mint jbj zz-suite-jbj)
+IND="Authorization: Bearer $IND_TOK"
+JBJ="Authorization: Bearer $JBJ_TOK"
+check "the suite minted an inditress token" True "$([ -n "$IND_TOK" ] && echo True || echo False)"
+check "the suite minted a jbj token" True "$([ -n "$JBJ_TOK" ] && echo True || echo False)"
+check "and each opens its own board" "inditress jbj" \
+  "$(curl -s -H "$IND" $B/api/tenant | jget 'd["slug"]') $(curl -s -H "$JBJ" $B/api/tenant | jget 'd["slug"]')"
+
+# One board that really has a passphrase, for the checks that are about what a passphrase
+# cannot do. It is deleted at the bottom, so its secret lives for the length of one run.
+PBS=zz-pass-board
+curl -s -o /dev/null -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/$PBS -d "{\"confirm\":\"$PBS\"}"
+PB_MADE=$(curl -s -X POST -H "$ADM" -H "$CT" $B/api/admin/tenants \
+  -d "{\"slug\":\"$PBS\",\"name\":\"ZZ Passphrase Board\",\"config\":{\"names\":\"Adi\"}}")
+PBK="Authorization: Bearer $(echo "$PB_MADE" | jget 'd.get("passphrase","")')"
+PBT="X-Tenant: $PBS"
+check "a throwaway board with a real passphrase exists" "$PBS" "$(curl -s -H "$PBK" $B/api/tenant | jget 'd["slug"]')"
+PB_CARD=$(curl -s -X POST -H "$PBK" -H "$CT" $B/api/cards -d '{"title":"zz passphrase card"}' | jget 'd["id"]')
+check "and the passphrase can write to it" True "$([ -n "$PB_CARD" ] && echo True || echo False)"
+
 echo "== auth"
 check "no key -> 401" 401 "$(code $B/api/cards)"
 check "wrong key -> 401" 401 "$(code -H 'Authorization: Bearer nope-nope-nope' $B/api/cards)"
@@ -116,14 +183,13 @@ IND_DOC=$(echo "$IND_DOCS" | jget 'd[0]["key"]')
 echo "  (inditress card $IND_CARD, subtask $IND_SUB, link $IND_LINK, note $IND_NOTE, document $IND_DOC)"
 
 echo "== jbj board"
-if [ "$(code -H "$JBJ" $B/api/tenant)" != 200 ]; then
-  BODY="{\"slug\":\"jbj\",\"name\":\"JBJ Jeweller\",\"passphrase\":\"$JBJ_PASSPHRASE\",\"config\":{\"brand\":\"JBJ Jeweller\",\"names\":\"Adi, Rahul\",\"accent\":\"#9C7A3C\"}}"
-  check "admin creates jbj" 201 "$(code -X POST -H "$ADM" -H "$CT" -d "$BODY" $B/api/admin/tenants)"
-fi
 check "duplicate slug -> 409" 409 "$(code -X POST -H "$ADM" -H "$CT" $B/api/admin/tenants -d '{"slug":"inditress","name":"x","config":{"names":"a"}}')"
 check "reserved slug -> 400" 400 "$(code -X POST -H "$ADM" -H "$CT" $B/api/admin/tenants -d '{"slug":"admin","name":"x","config":{"names":"a"}}')"
 check "jbj /tenant slug" jbj "$(curl -s -H "$JBJ" $B/api/tenant | jget 'd["slug"]')"
-check "jbj people" "['Adi', 'Rahul']" "$(curl -s -H "$JBJ" $B/api/tenant | jget 'd["config"]["names"]')"
+# Not exact equality any more: the suite's own agent is on this roster by the time anyone
+# asks, because minting the token added it. What matters is that the board's real people
+# still come back.
+check "jbj people" True "$(curl -s -H "$JBJ" $B/api/tenant | jget "set(['Adi','Rahul']) <= set(d['config']['names'])")"
 J_CARD=$(curl -s -X POST -H "$JBJ" -H "$CT" $B/api/cards -d '{"title":"Isolation test card","assignee":"Rahul"}' | jget 'd["id"]')
 check "jbj adds subtask to own card" 201 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/subtasks -d '{"title":"t"}')"
 check "jbj adds link to own card" 201 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/links -d '{"url":"https://example.com"}')"
@@ -192,14 +258,6 @@ login() { # username password jar -> http code
   curl -s -o /dev/null -w '%{http_code}' -c "$3" -X POST -H "$CT" \
     -d "{\"username\":\"$1\",\"password\":\"$2\"}" $B/api/auth/login; }
 
-# Adding someone appends their display name to that board's people list, so remember both
-# boards' lists and put them back in cleanup.
-names_of() { curl -s -H "$1" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"]["names"]))'; }
-JBJ_NAMES=$(names_of "$JBJ")
-IND_NAMES=$(names_of "$IND")
-# The plan checks edit jbj's tagline to prove a board admin can still change ordinary
-# settings, so remember it and put it back with the names.
-JBJ_TAGLINE=$(curl -s -H "$JBJ" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"].get("tagline","")))')
 
 JT="X-Tenant: jbj"
 IT="X-Tenant: inditress"
@@ -244,18 +302,29 @@ check "member cannot promote themselves" 403 "$(code -X PATCH -b $JAR -H "$JT" -
 check "member cannot remove anyone" 403 "$(code -X DELETE -b $JAR -H "$JT" $B/api/settings/users/$MEMBER_ID)"
 
 echo "-- an agent's passphrase is not a person"
-check "passphrase cannot read settings" 403 "$(code -H "$JBJ" $B/api/settings)"
-check "passphrase cannot list people" 403 "$(code -H "$JBJ" $B/api/settings/users)"
-check "passphrase cannot add a person" 403 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/settings/users -d '{"username":"zz-agent"}')"
-check "passphrase cannot change a password" 401 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/auth/password -d '{"currentPassword":"x","newPassword":"yyyyyyyyyy"}')"
-check "passphrase still works on /api/cards" 200 "$(code -H "$JBJ" $B/api/cards)"
+# On the throwaway board, because these are about what a PASSPHRASE cannot do and it is the
+# only board that has one.
+check "passphrase cannot read settings" 403 "$(code -H "$PBK" $B/api/settings)"
+check "passphrase cannot list people" 403 "$(code -H "$PBK" $B/api/settings/users)"
+check "passphrase cannot add a person" 403 "$(code -X POST -H "$PBK" -H "$CT" $B/api/settings/users -d '{"username":"zz-agent"}')"
+check "passphrase cannot change a password" 401 "$(code -X POST -H "$PBK" -H "$CT" $B/api/auth/password -d '{"currentPassword":"x","newPassword":"yyyyyyyyyy"}')"
+check "passphrase still works on /api/cards" 200 "$(code -H "$PBK" $B/api/cards)"
 
 echo "-- notes are attributed from the session, not the request body"
 JN_CARD=$(curl -s -X POST -H "$JBJ" -H "$CT" $B/api/cards -d '{"title":"Auth test card"}' | jget 'd["id"]')
 check "claimed author is ignored for a signed-in person" "ZZ Test Member" \
   "$(curl -s -X POST -b $JAR -H "$JT" -H "$CT" $B/api/cards/$JN_CARD/notes -d '{"body":"hi","author":"Adi"}' | jget 'd["author"]')"
-check "an agent still sets its own author" "Rahul" \
+check "an agent's own name wins over anything in the body" zz-suite-jbj \
   "$(curl -s -X POST -H "$JBJ" -H "$CT" $B/api/cards/$JN_CARD/notes -d '{"body":"hi","author":"Rahul"}' | jget 'd["author"]')"
+# This check used to be called "an agent still sets its own author" and expected "Rahul" —
+# while sending a PASSPHRASE. It was asserting the opposite of its own name and of the
+# heading above it, and it passed because a passphrase is the one credential with no name of
+# its own, so the body is all the route has to go on. Said plainly, on the board that has a
+# passphrase, it is a reason to retire them rather than a feature.
+check "a passphrase, naming nobody, takes the author from the body" "Rahul" \
+  "$(curl -s -X POST -H "$PBK" -H "$CT" $B/api/cards/$PB_CARD/notes -d '{"body":"hi","author":"Rahul"}' | jget 'd["author"]')"
+check "and with no author in the body, nobody is who wrote it" Anon \
+  "$(curl -s -X POST -H "$PBK" -H "$CT" $B/api/cards/$PB_CARD/notes -d '{"body":"hi"}' | jget 'd["author"]')"
 
 echo "-- one account across two boards"
 JOIN=$(curl -s -X POST -H "$ADM" -H "$IT" -H "$CT" $B/api/settings/users \
@@ -346,7 +415,7 @@ check "a board admin cannot list boards" 401 "$(code -b $JAR $B/api/admin/tenant
 check "a board admin cannot create a board" 401 "$(code -X POST -b $JAR -H "$CT" $B/api/admin/tenants -d '{"slug":"zz-sneak","name":"x","config":{"names":"a"}}')"
 check "a board admin cannot delete a board" 401 "$(code -X DELETE -b $JAR -H "$CT" $B/api/admin/tenants/jbj -d '{"confirm":"jbj"}')"
 check "a board admin cannot join a board" 401 "$(code -X POST -b $JAR $B/api/admin/tenants/inditress/join)"
-check "a passphrase cannot list boards" 401 "$(code -H "$JBJ" $B/api/admin/tenants)"
+check "a passphrase cannot list boards" 401 "$(code -H "$PBK" $B/api/admin/tenants)"
 
 echo "-- creating and deleting a board"
 NEWB="{\"slug\":\"zz-test-board\",\"name\":\"ZZ Test Board\",\"config\":{\"names\":\"ZZ Tester\"}}"
@@ -404,7 +473,7 @@ check "nor can one sent without X-Tenant" 401 "$(code -H "$NP_BAD" $B/api/cards)
 # sending jbj's passphrase here does not fail: it succeeds, for JBJ. Expecting 401 was
 # testing the wrong thing. What matters is that it does not reach the passphrase-less board,
 # which is what this asserts.
-check "another board's passphrase opens its own board, not this one" jbj \
+check "another board's token opens its own board, not this one" jbj \
   "$(curl -s -H "$JBJ" -H "X-Tenant: $NP_SLUG" $B/api/tenant | jget 'd["slug"]')"
 check "the master key with X-Tenant reads it" 200 "$(code -H "$ADM" -H "X-Tenant: $NP_SLUG" $B/api/cards)"
 check "and it is the right board" "$NP_SLUG" "$(curl -s -H "$ADM" -H "X-Tenant: $NP_SLUG" $B/api/tenant | jget 'd["slug"]')"
@@ -761,8 +830,8 @@ check "the card is free afterwards" None "$(curl -s -H "$ADM" -H "$JT" $B/api/ca
 callw -X DELETE -H "$AGH" $B/api/cards/$CL/claim
 check "releasing again is still 200" 200 "$RC"
 check "and says released: false" False "$(echo "$RB" | jget 'd["released"]')"
-check "a board passphrase claiming -> 400" 400 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$CL/claim -d '{}')"
-check "and records no claim" None "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$CL | jget 'd["claimed_by"]')"
+check "a board passphrase claiming -> 400" 400 "$(code -X POST -H "$PBK" -H "$CT" $B/api/cards/$PB_CARD/claim -d '{}')"
+check "and records no claim" None "$(curl -s -H "$ADM" -H "$PBT" $B/api/cards/$PB_CARD | jget 'd["claimed_by"]')"
 CD=$(mkcard '{"title":"zz claim then done card"}')
 check "an agent claims the card that will be finished -> 200" 200 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards/$CD/claim -d '{}')"
 check "and it is held before the move" zz-test-agent "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$CD | jget 'd["claimed_by"]')"
@@ -787,7 +856,7 @@ check "the counts agree with the lists" True "$(echo "$INBOX" | jget "d['counts'
 check "a human_only card assigned to the agent is not in its inbox" False "$(echo "$INBOX" | jget "any(c['id']==$HO for c in d['assigned'])")"
 check "nor is a note addressed to it on that card" False "$(echo "$INBOX" | jget "any(n['card']['id']==$HO for n in d['addressed'])")"
 check "an agent cannot read someone else's inbox with ?who" zz-test-agent "$(curl -s -H "$AGH" "$B/api/inbox?who=ZZ%20Test%20Member" | jget 'd["me"]["name"]')"
-check "a board passphrase has no inbox -> 400" 400 "$(code -H "$JBJ" $B/api/inbox)"
+check "a board passphrase has no inbox -> 400" 400 "$(code -H "$PBK" $B/api/inbox)"
 check "ADMIN_KEY with no ?who -> 400" 400 "$(code -H "$ADM" -H "$JT" $B/api/inbox)"
 check "ADMIN_KEY with ?who=<a name> -> 200" 200 "$(code -H "$ADM" -H "$JT" "$B/api/inbox?who=zz-test-agent")"
 check "and it reads that name's inbox" "['admin', 'zz-test-agent']" "$(curl -s -H "$ADM" -H "$JT" "$B/api/inbox?who=zz-test-agent" | jget "[d['me']['kind'], d['me']['name']]")"
@@ -797,7 +866,7 @@ check "and the card handed to them is in it" True "$(curl -s -b $JAR3 -H "$JT" $
 echo "-- /me/work reads across boards, through membership only"
 check "an agent token -> 403" 403 "$(code -H "$AGH" $B/api/me/work)"
 check "no credential -> 401" 401 "$(code $B/api/me/work)"
-check "a board passphrase -> 401" 401 "$(code -H "$JBJ" $B/api/me/work)"
+check "a board passphrase -> 401" 401 "$(code -H "$PBK" $B/api/me/work)"
 check "ADMIN_KEY is not a person -> 400" 400 "$(code -H "$ADM" $B/api/me/work)"
 # The member is on jbj only at this point (removed from inditress in "leaving one board").
 # A card on inditress is assigned to their exact display name, so the only thing keeping it
@@ -829,14 +898,14 @@ check "the inditress fixture card is removed" 404 "$(code -H "$IND" $B/api/cards
 
 echo "-- the agent registry"
 check "the member's session is live for the registry checks" 200 "$(code -b $JAR3 $B/api/auth/me)"
-check "the passphrase is live for the registry checks" 200 "$(code -H "$JBJ" $B/api/cards)"
+check "the passphrase is live for the registry checks" 200 "$(code -H "$PBK" $B/api/cards)"
 check "ADMIN_KEY lists every agent -> 200" 200 "$(code -H "$ADM" $B/api/admin/agents)"
 REG=$(curl -s -H "$ADM" $B/api/admin/agents)
 check "the registry is not empty" True "$(echo "$REG" | jget 'len(d["agents"])>0')"
 check "every entry carries a board slug" True "$(echo "$REG" | jget "len(d['agents'])>0 and all(a.get('board',{}).get('slug') for a in d['agents'])")"
 check "the test agent is listed under jbj" True "$(echo "$REG" | jget "any(a['name']=='zz-test-agent' and a['board']['slug']=='jbj' for a in d['agents'])")"
 check "no token -> 401" 401 "$(code $B/api/admin/agents)"
-check "a board passphrase -> 401" 401 "$(code -H "$JBJ" $B/api/admin/agents)"
+check "a board passphrase -> 401" 401 "$(code -H "$PBK" $B/api/admin/agents)"
 check "an agent token -> 401" 401 "$(code -H "$AGH" $B/api/admin/agents)"
 check "a signed-in board member (not a master admin) -> 401" 401 "$(code -b $JAR3 $B/api/admin/agents)"
 check "the registry never carries token_hash" False "$(echo "$REG" | grep -q 'token_hash' && echo True || echo False)"
@@ -859,7 +928,7 @@ echo "== approval gate and write limit"
 # The checks directly below prove all three before anything depends on them.
 check "the agent token is live for the gate and limit checks" 200 "$(code -H "$AGH" $B/api/cards)"
 check "the member's session is live and is the member" zz-test-member "$(curl -s -b $JAR3 $B/api/auth/me | jget "d['user']['username']")"
-check "the board passphrase is live for the passphrase check" 200 "$(code -H "$JBJ" $B/api/cards)"
+check "the board passphrase is live for the passphrase check" 200 "$(code -H "$PBK" $B/api/cards)"
 check "the member is a board admin of jbj right now" True "$(curl -s -b $JAR3 -H "$JT" $B/api/settings | jget 'd["isAdmin"]')"
 
 # callh is callw plus the response headers, for the one check that needs a header.
@@ -888,6 +957,16 @@ restore_board() {
   # test agent able to approve work on a gated board, so it is revoked here.
   [ "$MF_TOUCHED" = 1 ] && curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"mayFinish":false}'
   [ "$MEMBER_DEMOTED" = 1 ] && curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":true}'
+  # A run that dies half way would otherwise leave a live write token on a real board and a
+  # board with a live passphrase. The next run deletes both before it mints its own, so this
+  # is belt and braces — but an orphaned credential is the one kind of litter worth two
+  # mechanisms. Harmless when cleanup already removed them.
+  for S in inditress jbj; do
+    curl -s -o /dev/null -X DELETE -H "$ADM" -H "X-Tenant: $S" \
+      $B/api/settings/agents/$(agent_id_of $S zz-suite-$S)
+  done
+  [ -n "$PBS" ] && curl -s -o /dev/null -X DELETE -H "$ADM" -H "$CT" \
+    $B/api/admin/tenants/$PBS -d "{\"confirm\":\"$PBS\"}"
   return 0
 }
 trap restore_board EXIT
@@ -914,11 +993,11 @@ check "and is todo again" todo "$(gst $G1)"
 # the suite's own fixtures have grown the list and the capture from line ~168 is stale. The
 # question this block asks is whether the GATE disturbs the list, so the baseline has to be
 # what the list holds immediately before the gate is touched.
-GATE_NAMES=$(names_of "$JBJ")
+GATE_NAMES=$(names_of jbj)
 GATE_TOUCHED=1
 check "a board admin turns the gate on -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":true}}')"
 check "the setting reads back as on" True "$(gate_flag)"
-check "turning it on did not drop the board's people" "$GATE_NAMES" "$(names_of "$JBJ")"
+check "turning it on did not drop the board's people" "$GATE_NAMES" "$(names_of jbj)"
 
 callh -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}'
 check "gate on: an agent moving a card to done -> 403" 403 "$RC"
@@ -926,10 +1005,14 @@ check "and the refusal says what to do instead" True "$(echo "$RB" | jget "'revi
 check "the card's status is unchanged" todo "$(gst $G1)"
 check "the agent has not been granted may_finish (it defaults to false)" False "$(agent_mf)"
 
-callh -X PATCH -H "$JBJ" -H "$CT" $B/api/cards/$G1 -d '{"status":"done"}'
+# The passphrase half of the gate runs on the throwaway board, which is the only board that
+# has a passphrase — so the gate has to be on THERE for this to be the refusal under test.
+check "the throwaway board's gate goes on -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$PBT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":true}}')"
+callh -X PATCH -H "$PBK" -H "$CT" $B/api/cards/$PB_CARD -d '{"status":"done"}'
 check "gate on: a board passphrase moving a card to done -> 403" 403 "$RC"
 check "and the refusal says a passphrase names nobody" True "$(echo "$RB" | jget "'passphrase' in d['error']")"
-check "the card's status is unchanged by the passphrase" todo "$(gst $G1)"
+check "the card's status is unchanged by the passphrase" todo "$(curl -s -H "$ADM" -H "$PBT" $B/api/cards/$PB_CARD | jget 'd["status"]')"
+check "the throwaway board's gate goes off again -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$PBT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":false}}')"
 
 # The member is a board admin at this point, so a non-admin has to be made. The demotion is
 # proved by asking the member's own session before the refusal is trusted.
@@ -988,7 +1071,7 @@ check "the gate is off again" False "$(gate_flag)"
 GATE_TOUCHED=0
 check "may_finish is false on every agent on the board" True "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "all(a['mayFinish'] is False for a in d)")"
 check "and the gate is still off" False "$(gate_flag)"
-check "and the board's people list is unchanged" "$GATE_NAMES" "$(names_of "$JBJ")"
+check "and the board's people list is unchanged" "$GATE_NAMES" "$(names_of jbj)"
 for K in $G1 $G2; do curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K; done
 check "the gate fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "all(not c['title'].startswith('zz gate ') for c in d)")"
 
@@ -1207,6 +1290,19 @@ check "jbj removes the test member" True "$(echo "$LAST" | jget 'd.get("ok") is 
 check "their last board going takes the account with it" True "$(echo "$LAST" | jget 'd["accountRemoved"]')"
 check "the removed person cannot sign in" 401 "$(login zz-test-member brand-new-password $JAR2)"
 curl -s -o /dev/null -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/users/$MEMBER_ID -d '{"isAdmin":false}'
+# Last thing the board token is used for, so it has to come before the teardown below.
+check "jbj deletes its test card" 200 "$(code -X DELETE -H "$JBJ" $B/api/cards/$J_CARD)"
+
+# The minted credentials are destroyed before the rosters are put back, so the restore has
+# the last word on config.names and the suite's own agents cannot survive in it.
+for S in inditress jbj; do
+  AID=$(agent_id_of $S zz-suite-$S)
+  check "the suite's $S agent is deleted" 200 "$(code -X DELETE -H "$ADM" -H "X-Tenant: $S" $B/api/settings/agents/$AID)"
+done
+check "its token stops working at once" 401 "$(code -H "$JBJ" $B/api/cards)"
+check "the throwaway passphrase board is deleted" "$PBS" "$(curl -s -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/$PBS -d "{\"confirm\":\"$PBS\"}" | jget 'd.get("deleted",{}).get("slug","")')"
+check "and its passphrase opens nothing" 401 "$(code -H "$PBK" $B/api/cards)"
+
 RESTORE_JBJ="{\"config\":{\"names\":$JBJ_NAMES,\"tagline\":$JBJ_TAGLINE}}"
 RESTORE_IND="{\"config\":{\"names\":$IND_NAMES}}"
 # Checked, not fired blind: a silent restore that fails leaves test names in the assignee
@@ -1215,12 +1311,10 @@ RESTORE_IND="{\"config\":{\"names\":$IND_NAMES}}"
 # sitting on the inditress board for weeks with every run reporting success.
 check "jbj restore accepted" 200 "$(code -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/jbj -d "$RESTORE_JBJ")"
 check "inditress restore accepted" 200 "$(code -X PATCH -H "$ADM" -H "$CT" $B/api/admin/tenants/inditress -d "$RESTORE_IND")"
-check "jbj people list restored" "$JBJ_NAMES" "$(names_of "$JBJ")"
-check "jbj tagline restored" "$JBJ_TAGLINE" "$(curl -s -H "$JBJ" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"].get("tagline","")))')"
-check "inditress people list restored" "$IND_NAMES" "$(names_of "$IND")"
+check "jbj people list restored" "$JBJ_NAMES" "$(names_of jbj)"
+check "jbj tagline restored" "$JBJ_TAGLINE" "$(curl -s -H "$ADM" -H "$JT" $B/api/tenant | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"].get("tagline","")))')"
+check "inditress people list restored" "$IND_NAMES" "$(names_of inditress)"
 rm -f $JAR $JAR2
-
-check "jbj deletes its test card" 200 "$(code -X DELETE -H "$JBJ" $B/api/cards/$J_CARD)"
 
 echo; echo "passed $PASS, failed $FAIL"
 [ $FAIL -eq 0 ]
