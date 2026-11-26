@@ -242,6 +242,11 @@ export default function Board({ slug }) {
   // Both filters are applied here, once, so the columns and the empty-board message agree
   // about what "visible" means. `mine` is counted before the agent filter on purpose: it lets
   // the message tell "nothing is yours" apart from "yours is hidden behind agent work".
+  // How many cards the agent-work toggle would actually hide. A board where no agent has
+  // ever made a card for itself has none, and a button that cannot change anything is worse
+  // than no button: the first thing it teaches is that the controls do not work. So it
+  // appears only when there is something to act on, and says how much.
+  const agentCards = cards.filter(c => c.audience === 'agent_only').length;
   const mineAll = cards.filter(c => sameName(c.assignee, user));
   const visible = cards
     // A card waiting on a person stays visible whatever its audience says: an
@@ -262,9 +267,13 @@ export default function Board({ slug }) {
         {dots && <div className="dots" title={cfg.dotsTitle || ''}>{dots}</div>}
         {boards.length > 1 && <BoardSwitcher boards={boards} slug={slug} />}
         <div className="whoami">You are <b>{user}</b>{isAdminHere && <span className="badge">admin</span>}</div>
-        <button className={'linkbtn' + (showAgent ? ' on' : '')}
-          title="Show cards agents created for themselves"
-          onClick={() => setShowAgent(v => !v)}>{showAgent ? 'hide agent work' : 'show agent work'}</button>
+        {(agentCards > 0 || showAgent) && (
+          <button className={'linkbtn' + (showAgent ? ' on' : '')}
+            title={'Cards agents made for themselves, hidden from the team\u2019s board until an agent shares one. ' + agentCards + ' on this board.'}
+            onClick={() => setShowAgent(v => !v)}>
+            {showAgent ? 'hide agent work' : 'show agent work (' + agentCards + ')'}
+          </button>
+        )}
         <button className={'linkbtn' + (showMine ? ' on' : '')}
           title="Only cards assigned to you"
           onClick={() => setShowMine(v => !v)}>mine</button>
