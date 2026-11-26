@@ -101,6 +101,16 @@ IND_NAMES=$(names_of inditress)
 JBJ_TAGLINE=$(curl -s -H "$ADM" -H "X-Tenant: jbj" $B/api/tenant \
   | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["config"].get("tagline","")))')
 
+# These three are compared against at the bottom, and an empty capture would pass that
+# comparison by matching an equally empty read — while the restore body built from it,
+# {"names":,...}, would be malformed JSON and silently fail. That is not a hypothetical: it
+# is the exact mechanism by which test names sat on the inditress board for weeks with every
+# run reporting success. So the baselines are checked the moment they are taken.
+json_ok() { python3 -c 'import json,sys; v=json.loads(sys.argv[1]); print(isinstance(v,list) and len(v)>0 if sys.argv[2]=="list" else True)' "$1" "${2:-any}" 2>/dev/null || echo False; }
+check "the jbj roster baseline is a non-empty list" True "$(json_ok "$JBJ_NAMES" list)"
+check "the inditress roster baseline is a non-empty list" True "$(json_ok "$IND_NAMES" list)"
+check "the jbj tagline baseline is valid json" True "$(json_ok "$JBJ_TAGLINE")"
+
 # The limit is raised to the maximum because this suite makes far more than 120 writes a
 # minute and the throttle is not what is under test here; the throttle has its own section
 # at the bottom, with its own agent at the default.
@@ -194,7 +204,13 @@ J_CARD=$(curl -s -X POST -H "$JBJ" -H "$CT" $B/api/cards -d '{"title":"Isolation
 check "jbj adds subtask to own card" 201 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/subtasks -d '{"title":"t"}')"
 check "jbj adds link to own card" 201 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/links -d '{"url":"https://example.com"}')"
 check "jbj adds note to own card" 201 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/notes -d '{"body":"hi","author":"Rahul"}')"
-check "jbj sees only own cards" True "$(curl -s -H "$JBJ" $B/api/cards | jget "all(c['title']=='Isolation test card' for c in d)")"
+check "jbj sees only own cards" True "$(curl -s -H "$JBJ" $B/api/cards | jget "len(d)>0 and all(c['title']=='Isolation test card' for c in d)")"
+# jbj has no documents of its own at this point, so guarding this with len(d)>0 would be
+# wrong — an empty list IS the right answer. What was missing is any proof that the
+# comparison means something: the check passed identically whether isolation held or
+# /api/docs was broken and returning []. So the fixture is asserted on the board that owns
+# it first, and only then asserted absent from the other one.
+check "the inditress document fixture is real" True "$(curl -s -H "$IND" $B/api/docs | jget "'$IND_DOC' in [x['key'] for x in d]")"
 check "jbj sees no inditress documents" True "$(curl -s -H "$JBJ" $B/api/docs | jget "all(x['key'] != '$IND_DOC' for x in d)")"
 
 echo "== cross-tenant: jbj key on inditress rows (all must be 404)"
@@ -242,7 +258,9 @@ check "card reads back stuck" stuck "$(curl -s -H "$JBJ" $B/api/cards/$J_CARD | 
 OV=$(curl -s -H "$ADM" $B/api/admin/overview)
 check "overview counts jbj stuck" 1 "$(echo "$OV" | jget "[b['stuck'] for b in d['boards'] if b['slug']=='jbj'][0]")"
 check "overview lists the stuck card" True "$(echo "$OV" | jget "any(c['id']==$J_CARD for c in d['stuck'])")"
-check "stalled stays in-progress only" True "$(echo "$OV" | jget "all(c['id']!=$J_CARD for c in d['stalled'])")"
+# `stalled` can legitimately be empty, so non-emptiness is not the guard here — the shape
+# is. Without the key check this passed just as well if the field had been renamed away.
+check "stalled stays in-progress only" True "$(echo "$OV" | jget "'stalled' in d and all(c['id']!=$J_CARD for c in d['stalled'])")"
 check "card moves back out of stuck" 200 "$(code -X PATCH -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD -d '{"status":"todo"}')"
 
 echo "== pages"
@@ -276,6 +294,10 @@ check "wrong password -> 401" 401 "$(login zz-test-member wrong-password-here $J
 check "unknown user -> 401" 401 "$(login zz-no-such-user "$MEMBER_PW" $JAR2)"
 E1=$(curl -s -X POST -H "$CT" -d '{"username":"zz-test-member","password":"nope"}' $B/api/auth/login)
 E2=$(curl -s -X POST -H "$CT" -d '{"username":"zz-nobody","password":"nope"}' $B/api/auth/login)
+# Two empty strings are also indistinguishable, so the bodies have to exist before their
+# sameness means anything.
+check "the wrong-password response has a body at all" True "$([ -n "$E1" ] && echo True || echo False)"
+check "and it is an error body" True "$(echo "$E1" | jget '"error" in d')"
 check "wrong password and unknown user are indistinguishable" "$E1" "$E2"
 check "no cookie -> 401 on /me" 401 "$(code $B/api/auth/me)"
 check "/me lists the boards you are on" "['jbj']" "$(curl -s -b $JAR $B/api/auth/me | jget "[x['slug'] for x in d['boards']]")"
@@ -434,7 +456,7 @@ GONE=$(curl -s -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/zz-test-board -
 check "the right confirmation deletes it" "zz-test-board" "$(echo "$GONE" | jget 'd.get("deleted",{}).get("slug","")')"
 check "and says what it destroyed" True "$(echo "$GONE" | jget '"cards" in d.get("deleted",{})')"
 check "its lone account went with it" True "$(echo "$GONE" | jget "'zztester' in d.get('accountsRemoved',[])")"
-check "it is gone from the board list" False "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug']=='zz-test-board' for b in d)")"
+check "it is gone from the board list" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "len(d)>0 and not any(b['slug']=='zz-test-board' for b in d)")"
 check "its passphrase no longer opens anything" 401 "$(code -H "Authorization: Bearer $(echo "$MADE" | jget 'd["passphrase"]')" $B/api/cards)"
 
 echo "-- the real boards are untouched by all of that"
@@ -511,7 +533,7 @@ echo "-- cleanup"
 for S in $NP_SLUG $MI_SLUG $EM_SLUG; do
   check "$S is deleted" "$S" "$(curl -s -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/$S -d "{\"confirm\":\"$S\"}" | jget 'd.get("deleted",{}).get("slug","")')"
 done
-check "no test board is left behind" False "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug'] in ('$NP_SLUG','$MI_SLUG','$EM_SLUG') for b in d)")"
+check "no test board is left behind" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "len(d)>0 and not any(b['slug'] in ('$NP_SLUG','$MI_SLUG','$EM_SLUG') for b in d)")"
 
 echo "== agents have their own identity"
 # Bodies are hoisted into variables rather than built inline inside "$( … )": bash 3.2
@@ -527,7 +549,7 @@ AG_TOK=$(echo "$AG" | jget 'd.get("token","")')
 AGH="Authorization: Bearer $AG_TOK"
 check "an agent token is issued once" True "$([ -n "$AG_TOK" ] && echo True || echo False)"
 check "the token names its board" True "$(echo "$AG_TOK" | grep -q '^agt-jbj-' && echo True || echo False)"
-check "listing agents never returns a token" False "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "any('token' in a for a in d)")"
+check "listing agents never returns a token" True "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "len(d)>0 and not any('token' in a for a in d)")"
 check "the agent opens its own board" jbj "$(curl -s -H "$AGH" $B/api/tenant | jget 'd["slug"]')"
 check "and is refused another board's card" 404 "$(code -H "$AGH" $B/api/cards/$IND_CARD)"
 check "the agent is assignable" True "$(curl -s -H "$JBJ" $B/api/tenant | jget "'zz-test-agent' in d['config']['names']")"
@@ -552,7 +574,7 @@ H_CARD=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d "$HUMAN" | 
 P_CARD=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz person card"}' | jget 'd["id"]')
 check "a card a person creates is for both" both "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$P_CARD | jget 'd["audience"]')"
 check "and the agent does see that one" True "$(curl -s -H "$AGH" $B/api/cards | jget "any(c['id']==$P_CARD for c in d)")"
-check "the agent is not shown a human_only card" False "$(curl -s -H "$AGH" $B/api/cards | jget "any(c['id']==$H_CARD for c in d)")"
+check "the agent is not shown a human_only card" True "$(curl -s -H "$AGH" $B/api/cards | jget "len(d)>0 and not any(c['id']==$H_CARD for c in d)")"
 check "and gets 404 fetching it directly" 404 "$(code -H "$AGH" $B/api/cards/$H_CARD)"
 check "and 404 adding a note to it" 404 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards/$H_CARD/notes -d '{"body":"x"}')"
 check "and 404 patching it" 404 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$H_CARD -d '{"title":"pwned"}')"
@@ -589,7 +611,7 @@ check "doc bodies are valid json" OK "$(printf '%s' "$DOC$DOC2$DOC_STALE" | pyth
 check "a document is created at its key" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d "$DOC")"
 check "it reads back by key" "first version" "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget 'd["body"]')"
 check "an agent's document is readable by everyone" both "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget 'd["audience"]')"
-check "the list carries no bodies" False "$(curl -s -H "$AGH" $B/api/docs | jget "any('body' in x for x in d)")"
+check "the list carries no bodies" True "$(curl -s -H "$AGH" $B/api/docs | jget "len(d)>0 and not any('body' in x for x in d)")"
 check "the right version replaces it" 200 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d "$DOC2")"
 check "a stale version is refused" 409 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d "$DOC_STALE")"
 check "the stale write did not land" "second version" "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget 'd["body"]')"
@@ -613,7 +635,7 @@ check "reading from the end of the log returns nothing new" 0 \
   "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$(ev_end jbj)" | jget 'len(d["events"])')"
 curl -s -o /dev/null -X POST -H "$AGH" -H "$CT" $B/api/cards/$A_CARD/notes -d '{"body":"after the cursor"}'
 check "and picks up what happens after it" True "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?since=$CUR" | jget "any(e['verb']=='note.added' for e in d['events'])")"
-check "another board cannot read this log" True "$(curl -s -H "$IND" "$B/api/events?limit=200" | jget "all(e['actor']['name']!='zz-test-agent' for e in d['events'])")"
+check "another board cannot read this log" True "$(curl -s -H "$IND" "$B/api/events?limit=200" | jget "len(d['events'])>0 and all(e['actor']['name']!='zz-test-agent' for e in d['events'])")"
 
 echo "== the plan"
 # The plan is per board and off unless the board declares one, so the suite turns it on for
@@ -714,7 +736,7 @@ WH=$(curl -s -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID 
 check "a webhook can be set" "https://example.com/wake" "$(echo "$WH" | jget 'd.get("agent",{}).get("webhookUrl","")')"
 check "and a signing secret comes back once" True "$(echo "$WH" | jget "str(d.get('webhookSecret','')).startswith('whsec_')")"
 check "the verbs are kept" "['card.moved', 'note.added']" "$(echo "$WH" | jget 'd["agent"]["webhookVerbs"]')"
-check "the secret is never listed again" False "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "any('webhookSecret' in a or 'secret' in str(a) for a in d)")"
+check "the secret is never listed again" True "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "len(d)>0 and not any('webhookSecret' in a or 'secret' in str(a) for a in d)")"
 # The board makes this request itself, so an inward address would turn an agent's config
 # into server-side request forgery.
 check "plain http is refused" 400 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d "$HOOK_HTTP")"
@@ -751,7 +773,7 @@ mkcard() { curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d "$1" | jg
 echo "-- the status whitelist"
 check "a card created as 'archived' -> 422" 422 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz bad status","status":"archived"}')"
 check "a card created as 'Done' (wrong case) -> 422" 422 "$(code -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz bad status","status":"Done"}')"
-check "a refused create leaves no card behind" False "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "any(c['title']=='zz bad status' for c in d)")"
+check "a refused create leaves no card behind" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "len(d)>0 and not any(c['title']=='zz bad status' for c in d)")"
 callw -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz stuck card","status":"stuck"}'
 check "a card created as 'stuck' -> 201" 201 "$RC"
 STK=$(echo "$RB" | jget 'd["id"]')
@@ -779,7 +801,7 @@ EVC=$(ev_cursor)
 check "a title-only patch -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/cards/$AS_CARD -d '{"title":"zz assign card renamed"}')"
 EVS=$(ev_since "$EVC")
 check "a title-only patch logs card.updated and nothing else" "['card.updated']" "$(echo "$EVS" | jget "sorted(e['verb'] for e in d['events'] if e['subject']['type']=='card' and int(e['subject']['id'])==$AS_CARD)")"
-check "and does not log card.assigned" False "$(echo "$EVS" | jget "any(e['verb']=='card.assigned' for e in d['events'])")"
+check "and does not log card.assigned" True "$(echo "$EVS" | jget "len(d['events'])>0 and not any(e['verb']=='card.assigned' for e in d['events'])")"
 
 echo "-- addressed notes"
 NC=$(mkcard '{"title":"zz notes card"}')
@@ -866,8 +888,8 @@ check "a note addressed to the agent is in addressed" True "$(echo "$INBOX" | jg
 check "a card the agent holds is in claims" True "$(echo "$INBOX" | jget "any(c['id']==$IB for c in d['claims'])")"
 check "the roster names the agent" True "$(echo "$INBOX" | jget "'zz-test-agent' in d['roster']['agents']")"
 check "the counts agree with the lists" True "$(echo "$INBOX" | jget "d['counts']['assigned']==len(d['assigned']) and d['counts']['addressed']==len(d['addressed']) and d['counts']['claims']==len(d['claims'])")"
-check "a human_only card assigned to the agent is not in its inbox" False "$(echo "$INBOX" | jget "any(c['id']==$HO for c in d['assigned'])")"
-check "nor is a note addressed to it on that card" False "$(echo "$INBOX" | jget "any(n['card']['id']==$HO for n in d['addressed'])")"
+check "a human_only card assigned to the agent is not in its inbox" True "$(echo "$INBOX" | jget "len(d['assigned'])>0 and not any(c['id']==$HO for c in d['assigned'])")"
+check "nor is a note addressed to it on that card" True "$(echo "$INBOX" | jget "len(d['addressed'])>0 and not any(n['card']['id']==$HO for n in d['addressed'])")"
 check "an agent cannot read someone else's inbox with ?who" zz-test-agent "$(curl -s -H "$AGH" "$B/api/inbox?who=ZZ%20Test%20Member" | jget 'd["me"]["name"]')"
 check "a board passphrase has no inbox -> 400" 400 "$(code -H "$PBK" $B/api/inbox)"
 check "ADMIN_KEY with no ?who -> 400" 400 "$(code -H "$ADM" -H "$JT" $B/api/inbox)"
@@ -893,18 +915,18 @@ MW=$(curl -s -b $JAR3 $B/api/me/work)
 check "boards is an array" list "$(echo "$MW" | jget 'type(d["boards"]).__name__')"
 check "it names the person" "ZZ Test Member" "$(echo "$MW" | jget 'd["me"]["name"]')"
 check "a card assigned to them on jbj is under jbj" True "$(echo "$MW" | jget "any(c['id']==$AS_CARD for b in d['boards'] if b['board']['slug']=='jbj' for c in b['assigned'])")"
-check "a board they are not on never appears" False "$(echo "$MW" | jget "any(b['board']['slug']=='inditress' for b in d['boards'])")"
-check "nor does its card, though assigned to the same name" False "$(echo "$MW" | jget "any(c['id']==$MW_IND for b in d['boards'] for c in b['assigned'])")"
+check "a board they are not on never appears" True "$(echo "$MW" | jget "len(d['boards'])>0 and not any(b['board']['slug']=='inditress' for b in d['boards'])")"
+check "nor does its card, though assigned to the same name" True "$(echo "$MW" | jget "len(d['boards'])>0 and not any(c['id']==$MW_IND for b in d['boards'] for c in b['assigned'])")"
 MW_JOIN=$(curl -s -X POST -H "$ADM" -H "$IT" -H "$CT" $B/api/settings/users -d '{"username":"zz-test-member","displayName":"ZZ Test Member"}')
 check "the member joins inditress as the existing account" True "$(echo "$MW_JOIN" | jget 'd["existing"]')"
 MW=$(curl -s -b $JAR3 $B/api/me/work)
 check "on both boards, the jbj card is under jbj" True "$(echo "$MW" | jget "any(c['id']==$AS_CARD for b in d['boards'] if b['board']['slug']=='jbj' for c in b['assigned'])")"
 check "and the inditress card is under inditress" True "$(echo "$MW" | jget "any(c['id']==$MW_IND for b in d['boards'] if b['board']['slug']=='inditress' for c in b['assigned'])")"
-check "the jbj card is not under inditress" False "$(echo "$MW" | jget "any(c['id']==$AS_CARD for b in d['boards'] if b['board']['slug']=='inditress' for c in b['assigned'])")"
-check "the inditress card is not under jbj" False "$(echo "$MW" | jget "any(c['id']==$MW_IND for b in d['boards'] if b['board']['slug']=='jbj' for c in b['assigned'])")"
+check "the jbj card is not under inditress" True "$(echo "$MW" | jget "len(d['boards'])>0 and not any(c['id']==$AS_CARD for b in d['boards'] if b['board']['slug']=='inditress' for c in b['assigned'])")"
+check "the inditress card is not under jbj" True "$(echo "$MW" | jget "len(d['boards'])>0 and not any(c['id']==$MW_IND for b in d['boards'] if b['board']['slug']=='jbj' for c in b['assigned'])")"
 check "the member leaves inditress again" 200 "$(code -X DELETE -H "$ADM" -H "$IT" $B/api/settings/users/$MEMBER_ID)"
 MW=$(curl -s -b $JAR3 $B/api/me/work)
-check "the card on a board they left drops out of /me/work" False "$(echo "$MW" | jget "any(c['id']==$MW_IND for b in d['boards'] for c in b['assigned'])")"
+check "the card on a board they left drops out of /me/work" True "$(echo "$MW" | jget "len(d['boards'])>0 and not any(c['id']==$MW_IND for b in d['boards'] for c in b['assigned'])")"
 check "and the jbj card is still there" True "$(echo "$MW" | jget "any(c['id']==$AS_CARD for b in d['boards'] if b['board']['slug']=='jbj' for c in b['assigned'])")"
 curl -s -o /dev/null -X DELETE -H "$IND" $B/api/cards/$MW_IND
 check "the inditress fixture card is removed" 404 "$(code -H "$IND" $B/api/cards/$MW_IND)"
@@ -958,6 +980,7 @@ agent_rl() { curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "[a for a 
 # trap undo only what is still undone, so an interrupted run does not leave the real board
 # gated or the agent throttled.
 ORIG_RL=$(agent_rl)
+check "the agent's original write limit read back as a number" True "$(case "$ORIG_RL" in ''|*[!0-9]*) echo False;; *) echo True;; esac)"
 ORIG_GATE=$(gate_flag)
 GATE_TOUCHED=0; RL_TOUCHED=0; MEMBER_DEMOTED=0; MF_TOUCHED=0
 restore_board() {
@@ -1073,7 +1096,7 @@ check "and the card is still in review" review "$(gst $G2)"
 MF_TOUCHED=0
 
 check "gate on: an agent creating a card already done -> 403" 403 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz gate born done","status":"done"}')"
-check "and no such card was created" False "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "any(c['title']=='zz gate born done' for c in d)")"
+check "and no such card was created" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "len(d)>0 and not any(c['title']=='zz gate born done' for c in d)")"
 
 check "gate on: retitling a card that is already done -> 200" 200 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/cards/$G1 -d '{"title":"zz gate one renamed"}')"
 check "the retitle applied" "zz gate one renamed" "$(curl -s -H "$ADM" -H "$JT" $B/api/cards/$G1 | jget 'd["title"]')"
@@ -1082,16 +1105,16 @@ check "and the card is still done" done "$(gst $G1)"
 check "a board admin turns the gate back off -> 200" 200 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings -d '{"config":{"reviewGate":false}}')"
 check "the gate is off again" False "$(gate_flag)"
 GATE_TOUCHED=0
-check "may_finish is false on every agent on the board" True "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "all(a['mayFinish'] is False for a in d)")"
+check "may_finish is false on every agent on the board" True "$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents | jget "len(d)>0 and all(a['mayFinish'] is False for a in d)")"
 check "and the gate is still off" False "$(gate_flag)"
 check "and the board's people list is unchanged" "$GATE_NAMES" "$(names_of jbj)"
 for K in $G1 $G2; do curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K; done
-check "the gate fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "all(not c['title'].startswith('zz gate ') for c in d)")"
+check "the gate fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "len(d)>0 and all(not c['title'].startswith('zz gate ') for c in d)")"
 
 echo "-- per-agent write limit (last, so a failure here cannot throttle anything above)"
 LIST=$(curl -s -H "$ADM" -H "$JT" $B/api/settings/agents)
-check "rateLimit appears in the agents list" True "$(echo "$LIST" | jget "all('rateLimit' in a for a in d)")"
-check "rl_count and rl_window_start do not" False "$(echo "$LIST" | jget "any('rl_count' in a or 'rl_window_start' in a for a in d)")"
+check "rateLimit appears in the agents list" True "$(echo "$LIST" | jget "len(d)>0 and all('rateLimit' in a for a in d)")"
+check "rl_count and rl_window_start do not" True "$(echo "$LIST" | jget "len(d)>0 and not any('rl_count' in a or 'rl_window_start' in a for a in d)")"
 check "nor does any other rl_ plumbing" False "$(echo "$LIST" | grep -q 'rl_' && echo True || echo False)"
 check "rateLimit 0 -> 422" 422 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"rateLimit":0}')"
 check "rateLimit 10001 -> 422" 422 "$(code -X PATCH -H "$ADM" -H "$JT" -H "$CT" $B/api/settings/agents/$AG_ID -d '{"rateLimit":10001}')"
@@ -1114,7 +1137,7 @@ check "and an error that mentions the rate limit" True "$(echo "$RB" | jget "'ra
 RA=$(echo "$RH" | awk 'tolower($1)=="retry-after:" {print $2}')
 check "the 429 has a Retry-After that is a positive integer" True "$([[ "$RA" =~ ^[1-9][0-9]*$ ]] && echo True || echo False)"
 check "and it is no more than a minute" True "$([[ "$RA" =~ ^[0-9]+$ ]] && [ "$RA" -le 60 ] && echo True || echo False)"
-check "the refused write created nothing" False "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "any(c['title']=='zz rl refused' for c in d)")"
+check "the refused write created nothing" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "len(d)>0 and not any(c['title']=='zz rl refused' for c in d)")"
 check "while the two allowed ones did land" 2 "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "len([c for c in d if c['title'] in ('zz rl one','zz rl two')])")"
 check "a GET by the throttled agent still succeeds (reads are not counted)" 200 "$(code -H "$AGH" $B/api/cards)"
 check "and so does a second one" 200 "$(code -H "$AGH" $B/api/cards)"
@@ -1137,13 +1160,13 @@ check "the agent writes after the restore -> 201" 201 "$(code -X POST -H "$AGH" 
 for K in $(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "' '.join(str(c['id']) for c in d if c['title'].startswith('zz rl '))"); do
   curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K
 done
-check "the write-limit fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "all(not c['title'].startswith('zz rl ') for c in d)")"
+check "the write-limit fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "len(d)>0 and all(not c['title'].startswith('zz rl ') for c in d)")"
 
 echo "-- directed work cleanup"
 for K in $STK $AS_CARD $NC $AN $CL $CD $IB $HO; do
   curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/cards/$K
 done
-check "the directed-work fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "all(c['id'] not in [$STK,$AS_CARD,$NC,$AN,$CL,$CD,$IB,$HO] for c in d)")"
+check "the directed-work fixture cards are gone" True "$(curl -s -H "$ADM" -H "$JT" $B/api/cards | jget "len(d)>0 and all(c['id'] not in [$STK,$AS_CARD,$NC,$AN,$CL,$CD,$IB,$HO] for c in d)")"
 rm -f $JAR3
 
 echo "-- agent cleanup"
@@ -1293,7 +1316,7 @@ check "a batch may settle one too" 1 "$(curl -s -X POST -H "$PLA" -H "$CT" $B/ap
 
 echo "-- and the plan board goes away again"
 check "the plan board is deleted" "$PL" "$(curl -s -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/$PL -d "{\"confirm\":\"$PL\"}" | jget 'd.get("deleted",{}).get("slug","")')"
-check "no plan board is left behind" False "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug']=='$PL' for b in d)")"
+check "no plan board is left behind" True "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "len(d)>0 and not any(b['slug']=='$PL' for b in d)")"
 check "its history went with it" 401 "$(code -H "$PLH" $B/api/plan/history)"
 
 echo "== cleanup"
