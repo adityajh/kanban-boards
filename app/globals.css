@@ -301,3 +301,23 @@ a.linkbtn{text-decoration:none;display:inline-block}
 .tabs{overflow-x:auto}
 .tab{white-space:nowrap}
 @media(max-width:720px){.admin{padding:18px 16px 48px}}
+/* Rendered document bodies. Tuned for reading a brief rather than for a web page: one
+   column, generous leading, headings that step down clearly without shouting. */
+.md{font-size:14.5px;line-height:1.65;overflow-wrap:anywhere}
+.md>div>*:first-child{margin-top:0}
+.md>div>*:last-child{margin-bottom:0}
+.md h1,.md h2,.md h3,.md h4{font-weight:600;line-height:1.3;margin:20px 0 8px;letter-spacing:-.01em}
+.md h1{font-size:19px}.md h2{font-size:17px}.md h3{font-size:15px}.md h4{font-size:14px;color:var(--ink-60)}
+.md p{margin:0 0 12px}
+.md ul,.md ol{margin:0 0 12px;padding-left:20px;display:grid;gap:4px}
+.md li>ul,.md li>ol{margin:4px 0 0}
+.md code{background:var(--bone);border-radius:4px;padding:1px 5px;font-size:12.5px}
+.md pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto}
+.md pre code{background:none;padding:0;font-size:12.5px}
+.md blockquote{margin:0 0 12px;padding-left:14px;border-left:3px solid var(--line-2);color:var(--ink-60)}
+.md table{border-collapse:collapse;font-size:13.5px;margin:0 0 12px;display:block;overflow-x:auto}
+.md th,.md td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+.md th{background:var(--bone);font-weight:600}
+.md hr{border:0;border-top:1px solid var(--line);margin:18px 0}
+.md a{color:var(--accent)}
+.md img{max-width:100%;height:auto;border-radius:6px}

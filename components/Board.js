@@ -155,20 +155,29 @@ export default function Board({ slug }) {
 
   const load = useCallback(async () => {
     try {
-      const [cs, rs] = await Promise.all([api('/cards'), api('/resources')]);
+      // The Library used to be its own `resources` table of label-and-URL rows. 016 folded
+      // that into documents, which could already do everything it did and more, so the
+      // shelf now shows this board's documents: links open, text opens on the Plan.
+      const [cs, rs] = await Promise.all([api('/cards'), api('/docs')]);
       setCards(cs); setResources(rs); setErr('');
     } catch (e) { setErr(e.message); }
   }, [api]);
 
+  // A link added here becomes a document with a url and no body. The key is derived from
+  // the title so it reads sensibly in the API, with the clock on the end because two links
+  // can fairly be called the same thing and a key may only be used once.
   const addResource = async () => {
     if (!resUrl.trim() || !resLabel.trim()) return;
-    let u = resUrl.trim(); if (!/^https?:\/\//.test(u) && !u.startsWith('/')) u = 'https://' + u;
-    const r = await api('/resources', 'POST', { label: resLabel.trim(), url: u });
-    setResources(rs => [...rs, r]); setResLabel(''); setResUrl('');
+    let u = resUrl.trim(); if (!/^https?:\/\//.test(u)) u = 'https://' + u;
+    const slug = resLabel.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '').slice(0, 60) || 'untitled';
+    const key = 'link/' + slug + '-' + Date.now().toString(36);
+    await api('/docs/' + key, 'PUT', { title: resLabel.trim(), url: u, body: '' });
+    setResources(await api('/docs')); setResLabel(''); setResUrl('');
   };
-  const delResource = async (id) => {
-    await api('/resources/' + id, 'DELETE');
-    setResources(rs => rs.filter(r => r.id !== id));
+  const delResource = async (key) => {
+    await api('/docs/' + key, 'DELETE');
+    setResources(rs => rs.filter(r => r.key !== key));
     setDelRes(null);
   };
 
@@ -352,20 +361,22 @@ export default function Board({ slug }) {
       </div>
 
       <div className="library">
-        <div className="lib-head"><h3>Library</h3><span>Shared docs &amp; links</span></div>
+        <div className="lib-head"><h3>Library</h3><span>Documents &amp; links</span></div>
         <div className="shelf">
-          {resources.length === 0 && <div className="empty">No shared docs yet. Add one below.</div>}
+          {resources.length === 0 && <div className="empty">Nothing here yet. Add a link below.</div>}
           {resources.map(r => (
-            <div key={r.id} className="res">
-              <a href={r.url} target="_blank" rel="noreferrer">{r.label}</a>
-              {delRes === r.id ? (
+            <div key={r.key} className="res">
+              {r.url
+                ? <a href={r.url} target="_blank" rel="noreferrer">{r.title || r.key}</a>
+                : <a href={'/' + slug + '/plan'} title={'Read on the Plan · ' + r.key}>{r.title || r.key}</a>}
+              {delRes === r.key ? (
                 <span className="foot-left">
-                  <button className="btn danger" autoFocus onClick={() => delResource(r.id)}>Remove</button>
+                  <button className="btn danger" autoFocus onClick={() => delResource(r.key)}>Remove</button>
                   <button className="btn" onClick={() => setDelRes(null)}>Keep</button>
                 </span>
               ) : (
-                <button className="x" title="Remove from Library"
-                  onClick={() => setDelRes(r.id)}>×</button>
+                <button className="x" title="Remove from the Library"
+                  onClick={() => setDelRes(r.key)}>×</button>
               )}
             </div>
           ))}

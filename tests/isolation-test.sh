@@ -101,13 +101,19 @@ if [ -n "$EXPECT_IND_CARDS" ]; then
   check "inditress card count is exactly $EXPECT_IND_CARDS" "$EXPECT_IND_CARDS" "$IND_N"
 fi
 check "no tenant_id leaked in cards" False "$(echo "$IC" | jget '"tenant_id" in d[0]')"
-check "inditress resources" 3 "$(curl -s -H "$IND" $B/api/resources | jget 'len(d)')"
+# 016 folded the `resources` link library into documents, which could already do
+# everything it did. These checks follow the data to its new home rather than going on
+# counting an emptied table and passing for the wrong reason.
+IND_DOCS=$(curl -s -H "$IND" $B/api/docs)
+check "inditress has documents" True "$(echo "$IND_DOCS" | jget 'len(d) > 0')"
+check "and the folded-in links kept their url" True "$(echo "$IND_DOCS" | jget 'any(x.get("url") for x in d)')"
+check "the retired resources table is empty" 0 "$(curl -s -H "$IND" $B/api/resources | jget 'len(d)')"
 IND_CARD=$(echo "$IC" | jget '[c for c in d if c["subtasks"] and c["links"] and c["notes"]][0]["id"]')
 IND_SUB=$(echo "$IC" | jget "[c for c in d if c['id']==$IND_CARD][0]['subtasks'][0]['id']")
 IND_LINK=$(echo "$IC" | jget "[c for c in d if c['id']==$IND_CARD][0]['links'][0]['id']")
 IND_NOTE=$(echo "$IC" | jget "[c for c in d if c['id']==$IND_CARD][0]['notes'][0]['id']")
-IND_RES=$(curl -s -H "$IND" $B/api/resources | jget 'd[0]["id"]')
-echo "  (inditress card $IND_CARD, subtask $IND_SUB, link $IND_LINK, note $IND_NOTE, resource $IND_RES)"
+IND_DOC=$(echo "$IND_DOCS" | jget 'd[0]["key"]')
+echo "  (inditress card $IND_CARD, subtask $IND_SUB, link $IND_LINK, note $IND_NOTE, document $IND_DOC)"
 
 echo "== jbj board"
 if [ "$(code -H "$JBJ" $B/api/tenant)" != 200 ]; then
@@ -123,7 +129,7 @@ check "jbj adds subtask to own card" 201 "$(code -X POST -H "$JBJ" -H "$CT" $B/a
 check "jbj adds link to own card" 201 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/links -d '{"url":"https://example.com"}')"
 check "jbj adds note to own card" 201 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/cards/$J_CARD/notes -d '{"body":"hi","author":"Rahul"}')"
 check "jbj sees only own cards" True "$(curl -s -H "$JBJ" $B/api/cards | jget "all(c['title']=='Isolation test card' for c in d)")"
-check "jbj sees no inditress resources" 0 "$(curl -s -H "$JBJ" $B/api/resources | jget 'len(d)')"
+check "jbj sees no inditress documents" True "$(curl -s -H "$JBJ" $B/api/docs | jget "all(x['key'] != '$IND_DOC' for x in d)")"
 
 echo "== cross-tenant: jbj key on inditress rows (all must be 404)"
 check "GET card"         404 "$(code -H "$JBJ" $B/api/cards/$IND_CARD)"
@@ -136,7 +142,8 @@ check "PATCH subtask"    404 "$(code -X PATCH -H "$JBJ" -H "$CT" $B/api/subtasks
 check "DELETE subtask"   404 "$(code -X DELETE -H "$JBJ" $B/api/subtasks/$IND_SUB)"
 check "DELETE link"      404 "$(code -X DELETE -H "$JBJ" $B/api/links/$IND_LINK)"
 check "DELETE note"      404 "$(code -X DELETE -H "$JBJ" $B/api/notes/$IND_NOTE)"
-check "DELETE resource"  404 "$(code -X DELETE -H "$JBJ" $B/api/resources/$IND_RES)"
+check "DELETE document"  404 "$(code -X DELETE -H "$JBJ" $B/api/docs/$IND_DOC)"
+check "GET document"     404 "$(code -H "$JBJ" $B/api/docs/$IND_DOC)"
 check "inditress key on jbj card" 404 "$(code -H "$IND" $B/api/cards/$J_CARD)"
 check "garbage id -> 404" 404 "$(code -H "$JBJ" $B/api/cards/abc)"
 

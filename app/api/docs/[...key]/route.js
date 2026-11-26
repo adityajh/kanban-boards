@@ -13,8 +13,13 @@ const MAX_BYTES = 256 * 1024;
 const keyOf = (params) => (Array.isArray(params.key) ? params.key.join('/') : String(params.key || ''));
 const validKey = (k) => /^[a-z0-9][a-z0-9._\-/]{0,119}$/i.test(k) && !k.includes('//') && !k.endsWith('/');
 
+// A link is rendered as an href on a page people click, so the only thing that matters is
+// that it cannot carry a scheme which runs something. Private addresses are fine here,
+// unlike a webhook URL: nothing on the server ever fetches this.
+const LINK_OK = /^https?:\/\//i;
+
 const publicDoc = (d) => ({
-  key: d.key, title: d.title, body: d.body, audience: d.audience,
+  key: d.key, title: d.title, body: d.body, audience: d.audience, url: d.url || null,
   version: d.version, updatedBy: d.updated_by, updatedAt: d.updated_at, createdAt: d.created_at,
 });
 
@@ -51,6 +56,10 @@ export const PUT = withTenant(async (req, { params }, t, c) => {
   if (audience === 'human_only' && c.agent) {
     return json({ error: 'an agent cannot create a human_only document' }, 400);
   }
+  if (b.url != null && b.url !== '' && !LINK_OK.test(String(b.url))) {
+    return json({ field: 'url', error: 'url must be an http or https address' }, 422);
+  }
+  const url = b.url === undefined ? undefined : (b.url ? String(b.url) : null);
 
   const [existing] = await sql`select * from documents
     where tenant_id=${t.id} and lower(key)=lower(${key})`;
@@ -69,6 +78,7 @@ export const PUT = withTenant(async (req, { params }, t, c) => {
         title = ${b.title ?? existing.title},
         body = ${body},
         audience = ${b.audience || existing.audience},
+        url = ${url === undefined ? existing.url : url},
         version = version + 1,
         updated_by = ${whoami(c)},
         updated_at = now()
@@ -77,8 +87,8 @@ export const PUT = withTenant(async (req, { params }, t, c) => {
     return json(publicDoc(doc));
   }
 
-  const [doc] = await sql`insert into documents (tenant_id, key, title, body, audience, updated_by)
-    values (${t.id}, ${key}, ${b.title || key}, ${body}, ${audience}, ${whoami(c)}) returning *`;
+  const [doc] = await sql`insert into documents (tenant_id, key, title, body, audience, updated_by, url)
+    values (${t.id}, ${key}, ${b.title || key}, ${body}, ${audience}, ${whoami(c)}, ${url ?? null}) returning *`;
   await logEvent(c, t, 'doc.created', 'doc', doc.key, { title: doc.title });
   return json(publicDoc(doc), 201);
 });

@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { timeAgo } from './util';
 import Diagram from './Diagram';
+import Markdown from './Markdown';
 import { splitBlocks } from '../lib/markup.mjs';
 
 // The Plan is the board's second surface: what is true, rather than what is being done.
@@ -493,27 +494,31 @@ function Documents({ docs, api }) {
     <section>
       <h3>Documents</h3>
       <p className="hint">
-        Reference this board keeps — roles, briefs, writing rules. Agents read and write these
-        at <code>/api/docs/&lt;key&gt;</code>; a document is what somebody re-reads, where a card
-        is work that finishes.
+        Reference this board keeps — roles, briefs, writing rules, and links out to anything
+        held elsewhere. Agents read and write these at <code>/api/docs/&lt;key&gt;</code>; a
+        document is what somebody re-reads, where a card is work that finishes. Bodies are
+        Markdown, and a fenced <code>mermaid</code> block is drawn.
       </p>
       <ul className="plain docs">
         {docs.map(d => (
           <li key={d.key}>
-            <button className="linkish" onClick={() => show(d.key)} aria-expanded={open === d.key}>
-              {d.title || d.key}
-            </button>
-            <code>{d.key}</code>
+            {/* A document is text kept here or a pointer to something kept elsewhere. A
+                pointer has nothing to expand, so it is a link and not a button — the two
+                should not look alike when one navigates away and the other does not. */}
+            {d.url
+              ? <a href={safeHref(d.url) || undefined} target="_blank" rel="noreferrer noopener">
+                  {d.title || d.key}
+                </a>
+              : <button className="linkish" onClick={() => show(d.key)} aria-expanded={open === d.key}>
+                  {d.title || d.key}
+                </button>}
+            <code>{d.url ? 'link' : d.key}</code>
             {d.updatedBy && <span className="hint"> · {d.updatedBy}</span>}
             {d.updatedAt && <span className="hint"> · {timeAgo(d.updatedAt)}</span>}
             {open === d.key && (
               body[d.key] === undefined
                 ? <p className="hint">Loading…</p>
-                : splitBlocks(body[d.key]).map((b, j) => (
-                    b.kind === 'diagram'
-                      ? <Diagram key={j} source={b.value} />
-                      : <pre key={j} className="code wrap">{b.value}</pre>
-                  ))
+                : <Markdown text={body[d.key]} />
             )}
           </li>
         ))}
