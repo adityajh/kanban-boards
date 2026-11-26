@@ -709,28 +709,55 @@ check "superseding is the same rule as deciding" 200 "$(code -X PATCH -H "$AGH" 
 # only board that has both a plan and a passphrase.
 
 echo "-- every kind can point at a card, and the card has to exist (P5)"
-check "a milestone may name a card on this board" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m1 -d "{\"title\":\"zz ship it\",\"date\":\"2026-12-06\",\"card_id\":$J_CARD}")"
-check "and it reads back" "$J_CARD" "$(curl -s -H "$AGH" $B/api/tracker/milestone/zz-m1 | jget 'd["card_id"]')"
-check "a risk may too" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/risk/zz-r1 -d "{\"title\":\"zz a risk\",\"level\":\"high\",\"card_id\":$J_CARD}")"
-check "so may a log entry" 201 "$(code -X POST -H "$AGH" -H "$CT" $B/api/tracker/log -d "{\"text\":\"zz linked log\",\"card_id\":$J_CARD}")"
-check "and an actual" 200 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/tracker/actual/2026-11 -d "{\"card_id\":$J_CARD}")"
+# Built with printf rather than escaped double quotes, and sent with --data-binary. These
+# four went 422 on 26 Nov while the identical request succeeded from a standalone script,
+# which means the fault was in how this file built or sent them rather than in the app. The
+# body is printed on any failure so the next run says what the server actually objected to
+# instead of leaving it to be deduced.
+check "the jbj card id is set before it is used" True "$(echo "$J_CARD" | grep -qE '^[0-9]+$' && echo True || echo False)"
+MS=$(printf '{"title":"zz ship it","date":"2026-12-06","card_id":%s}' "$J_CARD")
+callw -X PUT -H "$AGH" -H "$CT" --data-binary "$MS" $B/api/tracker/milestone/zz-m1
+check "a milestone may name a card on this board" 201 "$RC"
+[ "$RC" = 201 ] || echo "       sent: $MS"$'\n'"       got:  $RB"
+check "and it reads back" "$J_CARD" "$(curl -s -H "$AGH" $B/api/tracker/milestone/zz-m1 | jget 'd.get("card_id","(absent)")')"
+RK=$(printf '{"title":"zz a risk","level":"high","card_id":%s}' "$J_CARD")
+callw -X PUT -H "$AGH" -H "$CT" --data-binary "$RK" $B/api/tracker/risk/zz-r1
+check "a risk may too" 201 "$RC"
+[ "$RC" = 201 ] || echo "       sent: $RK"$'\n'"       got:  $RB"
+LG=$(printf '{"text":"zz linked log","card_id":%s}' "$J_CARD")
+callw -X POST -H "$AGH" -H "$CT" --data-binary "$LG" $B/api/tracker/log
+check "so may a log entry" 201 "$RC"
+[ "$RC" = 201 ] || echo "       sent: $LG"$'\n'"       got:  $RB"
+# This one passed on 26 Nov and should not have: an empty-body PATCH merges nothing and
+# answers 200, so the code alone proved nothing. Assert the link actually landed.
+AC=$(printf '{"card_id":%s}' "$J_CARD")
+callw -X PATCH -H "$AGH" -H "$CT" --data-binary "$AC" $B/api/tracker/actual/2026-11
+check "and an actual" 200 "$RC"
+check "and the actual really carries the link" "$J_CARD" "$(curl -s -H "$AGH" $B/api/tracker/actual/2026-11 | jget 'd.get("card_id","(absent)")')"
 # The point of P5 is not the field, it is that the link goes somewhere. A card_id naming
 # another board's card must not resolve, or the Plan becomes a way to probe for card ids.
-check "another board's card -> 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d "{\"title\":\"zz x\",\"date\":\"2026-12-06\",\"card_id\":$IND_CARD}")"
-check "the refusal names the field" card_id "$(curl -s -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d "{\"title\":\"zz x\",\"date\":\"2026-12-06\",\"card_id\":$IND_CARD}" | jget 'd["field"]')"
+check "the inditress card id is set before it is used" True "$(echo "$IND_CARD" | grep -qE '^[0-9]+$' && echo True || echo False)"
+XB=$(printf '{"title":"zz x","date":"2026-12-06","card_id":%s}' "$IND_CARD")
+callw -X PUT -H "$AGH" -H "$CT" --data-binary "$XB" $B/api/tracker/milestone/zz-m2
+check "another board's card -> 422" 422 "$RC"
+check "the refusal names the field" card_id "$(echo "$RB" | jget 'd.get("field","(absent)")')"
+[ "$RC" = 422 ] || echo "       sent: $XB"$'\n'"       got:  $RB"
 check "and no such row was created" 404 "$(code -H "$AGH" $B/api/tracker/milestone/zz-m2)"
 check "a card that does not exist -> 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d '{"title":"zz x","date":"2026-12-06","card_id":99999999}')"
 check "a card_id that is not an id -> 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d '{"title":"zz x","date":"2026-12-06","card_id":"abc"}')"
 check "a boolean is not card 1 -> 422" 422 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m2 -d '{"title":"zz x","date":"2026-12-06","card_id":true}')"
-check "a patch cannot smuggle one in either" 422 "$(code -X PATCH -H "$AGH" -H "$CT" $B/api/tracker/milestone/zz-m1 -d "{\"card_id\":$IND_CARD}")"
-check "the good link survived the refused patch" "$J_CARD" "$(curl -s -H "$AGH" $B/api/tracker/milestone/zz-m1 | jget 'd["card_id"]')"
+SM=$(printf '{"card_id":%s}' "$IND_CARD")
+callw -X PATCH -H "$AGH" -H "$CT" --data-binary "$SM" $B/api/tracker/milestone/zz-m1
+check "a patch cannot smuggle one in either" 422 "$RC"
+[ "$RC" = 422 ] || echo "       sent: $SM"$'\n'"       got:  $RB"
+check "the good link survived the refused patch" "$J_CARD" "$(curl -s -H "$AGH" $B/api/tracker/milestone/zz-m1 | jget 'd.get("card_id","(absent)")')"
 check "a batch is checked the same way" 422 "$(code -X POST -H "$AGH" -H "$CT" $B/api/tracker/batch -d "{\"ops\":[{\"op\":\"put\",\"kind\":\"risk\",\"id\":\"zz-r2\",\"title\":\"ok\",\"level\":\"low\"},{\"op\":\"put\",\"kind\":\"risk\",\"id\":\"zz-r3\",\"title\":\"bad\",\"level\":\"low\",\"card_id\":$IND_CARD}]}")"
 check "and the valid op in that batch did not land" 404 "$(code -H "$AGH" $B/api/tracker/risk/zz-r2)"
 
 echo "-- rows that claim to describe the present can go stale (P6)"
 check "a fresh status row is not stale" False "$(curl -s -H "$AGH" $B/api/tracker/status/zz-one | jget 'd["stale"]')"
 check "the flag is on every row of a list" True "$(curl -s -H "$AGH" $B/api/tracker/status | jget "len(d)>0 and all('stale' in r for r in d)")"
-check "a fresh risk is not stale either" False "$(curl -s -H "$AGH" $B/api/tracker/risk/zz-r1 | jget 'd["stale"]')"
+check "a fresh risk is not stale either" False "$(curl -s -H "$AGH" $B/api/tracker/risk/zz-r1 | jget 'd.get("stale","(absent)")')"
 # Not merely false-because-new: these kinds record a moment and can never be stale, which
 # is the distinction the flag exists to draw.
 check "a decision is never stale" False "$(curl -s -H "$AGH" $B/api/tracker/decision/ZZ-01 | jget 'd["stale"]')"
