@@ -82,7 +82,7 @@ export const PUT = withTenant(async (req, { params }, t, c) => {
     return json(publicItem(row));
   }
 
-  const audience = b.audience || defaultAudience(c, t);
+  const audience = b.audience || defaultAudience();
   if (!AUDIENCES.includes(audience)) {
     return json({ error: `audience must be one of ${AUDIENCES.join(', ')}` }, 400);
   }

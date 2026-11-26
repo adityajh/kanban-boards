@@ -11,7 +11,7 @@ import { newWebhookSecret, validWebhookUrl, sign, verifySignature, secretRefusal
 import { validateItem, decisionRefusal, findContactDetail, newLogId } from '../lib/tracker.mjs';
 import {
   STATUSES, statusRefusal, sameName, identityName, leaseRefusal, claimState, claimRefusal,
-  addresseeRefusal, answeredRefusal, defaultAudienceFor, approvalRefusal,
+  addresseeRefusal, answeredRefusal, isAgentWork, approvalRefusal,
 } from '../lib/cards.mjs';
 import { rateLimitRefusal, retryAfterSeconds } from '../lib/ratelimit.mjs';
 import { splitBlocks, hasDiagram } from '../lib/markup.mjs';
@@ -424,23 +424,32 @@ await t('answered is a person\'s boolean and nobody else\'s', () => {
 });
 
 console.log('== audience default for new cards');
-await t('a person\'s cards are visible to both, whatever the board says', () => {
-  const person = { person: { id: 2, display_name: 'Akshay' } };
-  assert.strictEqual(defaultAudienceFor(person, null), 'both');
-  assert.strictEqual(defaultAudienceFor(person, { config: { agentCardsDefault: 'agent_only' } }), 'both');
-});
-await t('an agent\'s cards stay agent_only unless the board opts in to both', () => {
-  const agent = { agent: { name: 'grok' } };
-  assert.strictEqual(defaultAudienceFor(agent, null), 'agent_only');
-  assert.strictEqual(defaultAudienceFor(agent, {}), 'agent_only');
-  assert.strictEqual(defaultAudienceFor(agent, { config: {} }), 'agent_only');
-  // An unknown value falls back to the private default rather than being stored as-is.
-  assert.strictEqual(defaultAudienceFor(agent, { config: { agentCardsDefault: 'everyone' } }), 'agent_only');
-  assert.strictEqual(defaultAudienceFor(agent, { config: { agentCardsDefault: 'both' } }), 'both');
-  assert.strictEqual(defaultAudienceFor(agent, { config: { agentCardsDefault: 'agent_only' } }), 'agent_only');
+await t('agent work is decided by the assignee, not by who made the card', () => {
+  // The whole point of 015: a card an agent created and handed to a person is that person's
+  // work. Under the old stored flag it stayed branded as agent work for ever.
+  const agents = ['AdiGrok', 'AdiClaude'];
+  assert.equal(isAgentWork({ assignee: 'AdiGrok' }, agents), true);
+  assert.equal(isAgentWork({ assignee: 'Gargi' }, agents), false);
+  // Case and stray spacing are how a name typed by a person and a name sent by an agent
+  // usually differ, and neither should change the answer.
+  assert.equal(isAgentWork({ assignee: '  adiclaude ' }, agents), true);
+  assert.equal(isAgentWork({ assignee: 'ADIGROK' }, agents), true);
 });
 
-console.log('== markup blocks');
+await t('nothing is agent work when there is nobody to attribute it to', () => {
+  const agents = ['AdiGrok'];
+  // Unassigned work belongs to everybody, so it must never be filtered out of the board.
+  assert.equal(isAgentWork({ assignee: 'Unassigned' }, agents), false);
+  assert.equal(isAgentWork({ assignee: '' }, agents), false);
+  assert.equal(isAgentWork({ assignee: null }, agents), false);
+  assert.equal(isAgentWork({}, agents), false);
+  // A board with no agents has no agent work, whatever its cards say.
+  assert.equal(isAgentWork({ assignee: 'AdiGrok' }, []), false);
+  assert.equal(isAgentWork({ assignee: 'AdiGrok' }), false);
+  // And a missing card does not throw: the board calls this while it is still loading.
+  assert.equal(isAgentWork(null, agents), false);
+});
+
 await t('no text means no blocks', () => {
   assert.deepStrictEqual(splitBlocks(''), []);
   assert.deepStrictEqual(splitBlocks(null), []);

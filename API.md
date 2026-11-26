@@ -46,7 +46,7 @@ Without `X-Tenant` it only works on `/admin/*`.
   "title": "Finalise the shade card",
   "description": "…",
   "status": "todo | in_progress | stuck | review | done",
-  "audience": "both | human_only | agent_only",
+  "audience": "both | human_only",
   "due_at": "2026-12-01T00:00:00.000Z | null",
   "assignee": "<one of the board's people> | Unassigned",
   "answered": false,
@@ -72,7 +72,7 @@ person's tick (see [Directed work](#directed-work)).
 | GET | `/tenant` | — | This board: `{slug, name, config}` (people, tags, brand, and the keys under [Board config](#board-config)) |
 | GET | `/cards` | — | All cards with nested subtasks, links, notes. An agent is not served `human_only` rows; when some were withheld the response carries `X-Hidden-Cards: <n>` so a summary is not silently incomplete |
 | GET | `/cards/:id` | — | One card |
-| POST | `/cards` | `{title, status?, assignee?, tag?, description?, audience?, due_at?}` | Create a project. `audience` defaults to `agent_only` for an agent token, unless the board sets `config.agentCardsDefault` to `both`; for anyone else it is `both`. An agent passing `human_only` gets `400`. An agent that sends no `assignee` is assigned the card itself. A `status` outside the five is `422`. A card created already assigned to somebody other than its creator emits `card.assigned` as well as `card.created`. On a board with `config.reviewGate`, `status: "done"` is `403` unless the caller may finish (a signed-in person, `ADMIN_KEY`, or an agent the board has allowed; see [The approval gate](#the-approval-gate)) |
+| POST | `/cards` | `{title, status?, assignee?, tag?, description?, audience?, due_at?}` | Create a project. `audience` is always `both` unless a person sets `human_only`; whether a card counts as *agent work* on the board is decided by its assignee, not stored (migration 015). An agent passing `human_only` gets `400`. An agent that sends no `assignee` is assigned the card itself. A `status` outside the five is `422`. A card created already assigned to somebody other than its creator emits `card.assigned` as well as `card.created`. On a board with `config.reviewGate`, `status: "done"` is `403` unless the caller may finish (a signed-in person, `ADMIN_KEY`, or an agent the board has allowed; see [The approval gate](#the-approval-gate)) |
 | PATCH | `/cards/:id` | any of `{title, description, status, assignee, tag, position, audience, due_at, answered}` | Update (move column = change `status`). An agent cannot set `audience` to `human_only`. A `status` outside the five is `422`. `answered` must be a boolean and an agent that sends it gets `422`. Moving to `done` releases any claim. On a board with `config.reviewGate`, a change of `status` to `done` is `403` unless the caller may finish (a signed-in person, `ADMIN_KEY`, or an agent the board has allowed; see [The approval gate](#the-approval-gate)) |
 | DELETE | `/cards/:id` | — | Delete project + all children |
 | POST | `/cards/:id/subtasks` | `{title}` | Add subtask |
@@ -98,7 +98,7 @@ master-admin only (see [The Plan](#the-plan)).
 
 | Key | Values | Effect |
 |---|---|---|
-| `agentCardsDefault` | `agent_only` (default), `both` | The `audience` a card gets when an agent creates one without saying. People's cards are always `both` |
+
 | `reviewGate` | `true` | Only a signed-in person, `ADMIN_KEY`, or an agent the board has allowed (`mayFinish`) may bring a card to `done`. Stored only when `true`; any other value leaves the board ungated. See [The approval gate](#the-approval-gate) |
 
 Both are also settable by a board admin on the Settings screen. The config also carries the

@@ -283,3 +283,21 @@ a.linkbtn{text-decoration:none;display:inline-block}
 /* The may-finish checkbox sits in a table cell of its own; centre it under its heading so a
    column of them reads as a column rather than a ragged edge. */
 .atable label.finish{display:flex;justify-content:center;align-items:center;cursor:pointer;min-height:22px}
+/* Cross-board admin grids. The grid scrolls inside .ascroll, never the page, and the first
+   column stays put so a person's name is still visible while you scroll across to a board. */
+.atable.grid th:first-child,.atable.grid td:first-child{position:sticky;left:0;background:var(--bone);z-index:1;box-shadow:1px 0 0 var(--line)}
+.atable.grid td:first-child b{font-weight:600}
+.atable.grid .badge{margin-left:6px}
+.atable.grid .cell{min-width:104px}
+.atable.grid .cell.none{color:var(--ink-40)}
+.atable.grid .cell.admin select{color:var(--accent);font-weight:600;border-color:var(--accent)}
+.atable.grid .cell.member select{color:var(--ink)}
+.atable.grid .cell select{font:inherit;font-size:12px;padding:4px 6px;background:var(--card);border:1px solid var(--line-2);border-radius:6px;color:var(--ink-60)}
+.atable.grid .cell select:disabled{opacity:.5}
+.atable.grid .cell.agent a{font-weight:600}
+.atable.grid .cell.agent .sub{margin-top:2px}
+.badge.warn{color:#9B3B2E;border-color:#9B3B2E}
+.alist li > b{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-60);margin-right:10px}
+.tabs{overflow-x:auto}
+.tab{white-space:nowrap}
+@media(max-width:720px){.admin{padding:18px 16px 48px}}

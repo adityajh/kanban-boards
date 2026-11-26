@@ -180,10 +180,9 @@ function BoardSettings({ tenant, api, onSaved }) {
     tags: (cfg.tags || []).join(', '),
     dots: cfg.dots || 0,
     dotsTitle: cfg.dotsTitle || '',
-    // Two settings that describe how this board WORKS rather than how it looks. Both are
-    // off by default, so a board nobody configures behaves exactly as it always has.
+    // Describes how this board WORKS rather than how it looks, and is off by default, so a
+    // board nobody configures behaves exactly as it always has.
     reviewGate: !!cfg.reviewGate,
-    agentCardsDefault: cfg.agentCardsDefault || 'agent_only',
   });
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -202,7 +201,7 @@ function BoardSettings({ tenant, api, onSaved }) {
           brand: f.brand, tagline: f.tagline, accent: f.accent,
           names: asList(f.names), tags: asList(f.tags),
           dots: Number(f.dots) || 0, dotsTitle: f.dotsTitle,
-          reviewGate: f.reviewGate, agentCardsDefault: f.agentCardsDefault,
+          reviewGate: f.reviewGate,
         },
       });
       setMsg('Saved.');
@@ -232,17 +231,6 @@ function BoardSettings({ tenant, api, onSaved }) {
         <label>Dots (0–8)
           <input type="number" min="0" max="8" value={f.dots} onChange={set('dots')} /></label>
         <label>Dots caption<input value={f.dotsTitle} onChange={set('dotsTitle')} /></label>
-        <label className="wide">An agent's new cards are
-          <select value={f.agentCardsDefault} onChange={set('agentCardsDefault')}>
-            <option value="agent_only">for agents, until one shares it</option>
-            <option value="both">visible to everyone</option>
-          </select>
-          <span className="sub">
-            Keep the first on a board run by people, so agent working notes stay out of the
-            way. Choose the second on a board where almost everything is done by agents,
-            where the first leaves the board looking empty to whoever is watching it.
-          </span>
-        </label>
         <label className="wide check">
           <input type="checkbox" checked={f.reviewGate} onChange={setBool('reviewGate')} />
           A board admin must approve work as done

@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { timeAgo, store } from './util';
 import Diagram from './Diagram';
 import { splitBlocks } from '../lib/markup.mjs';
-import { claimState, sameName } from '../lib/cards.mjs';
+import { claimState, sameName, isAgentWork } from '../lib/cards.mjs';
 
 // Stuck sits after In Progress: it is where started work goes when it cannot proceed, not a
 // step on the way to Review. One list drives the columns, the drop targets and the status
@@ -242,16 +242,21 @@ export default function Board({ slug }) {
   // Both filters are applied here, once, so the columns and the empty-board message agree
   // about what "visible" means. `mine` is counted before the agent filter on purpose: it lets
   // the message tell "nothing is yours" apart from "yours is hidden behind agent work".
-  // How many cards the agent-work toggle would actually hide. A board where no agent has
-  // ever made a card for itself has none, and a button that cannot change anything is worse
-  // than no button: the first thing it teaches is that the controls do not work. So it
-  // appears only when there is something to act on, and says how much.
-  const agentCards = cards.filter(c => c.audience === 'agent_only').length;
+  // A card is agent work when it is ASSIGNED to one of this board's agents. That is a live
+  // question, not a flag set when the card was made: hand the card to Gargi and it stops
+  // being agent work, which is what you would expect and what the old stored flag could
+  // never do. The names come from the board's own agent list, so a person who happens to
+  // share a name with no agent is never caught by it.
+  const agentNames = roster?.agents || [];
+  const isAgentCard = (c) => isAgentWork(c, agentNames);
+  // The toggle appears only when it would change something. A button that cannot act is
+  // worse than no button: the first thing it teaches is that the controls do not work.
+  const agentCards = cards.filter(isAgentCard).length;
   const mineAll = cards.filter(c => sameName(c.assignee, user));
   const visible = cards
     // A card waiting on a person stays visible whatever its audience says: an
     // approval nobody can see is a card stuck forever.
-    .filter(c => showAgent || c.audience !== 'agent_only' || c.status === 'review')
+    .filter(c => showAgent || !isAgentCard(c) || c.status === 'review')
     .filter(c => !showMine || sameName(c.assignee, user));
   const mineEmpty = showMine && visible.length === 0
     ? (mineAll.length > 0
@@ -314,7 +319,7 @@ export default function Board({ slug }) {
                       </div>
                       {tot > 0 && <div className="bar"><i style={{ width: (done / tot * 100) + '%' }} /></div>}
                       <div className="assignee" style={{ marginTop: 6, fontSize: 10 }}>
-                        {c.audience === 'agent_only' && <span className="pill agentpill">agent</span>}
+                        {isAgentCard(c) && <span className="pill agentpill">agent</span>}
                         {held && <span className="pill claimpill" title={'Until ' + untilLabel(held.until)}>claimed · {held.by}</span>}
                         {c.answered && <span className="pill answeredpill" title="A person has dealt with this">✓ answered</span>}
                         {c.due_at && <span className={'pill' + (overdue(c) ? ' late' : '')}>due {dueLabel(c.due_at)}</span>}

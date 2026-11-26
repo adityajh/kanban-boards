@@ -11,6 +11,10 @@ export default function Admin() {
   const [err, setErr] = useState('');
   const [form, setForm] = useState(EMPTY_FORM);
   const [created, setCreated] = useState(null);
+  const [tab, setTab] = useState('people');
+  const [people, setPeople] = useState(null);
+  const [agents, setAgents] = useState(null);
+  const [busy, setBusy] = useState('');
 
   useEffect(() => { setKey(store.get('admin_key')); document.title = 'Boards · Admin'; }, []);
 
@@ -26,10 +30,26 @@ export default function Admin() {
     return j;
   }, [key]);
 
-  const load = useCallback(() => api('/overview')
-    .then(d => { store.set('admin_key', key); setData(d); setErr(''); })
+  // The three reads are independent, so they go together; the panel is only as useful as its
+  // slowest one, and a failure in any of them should say so rather than draw a half screen.
+  const load = useCallback(() => Promise.all([api('/overview'), api('/people'), api('/agents')])
+    .then(([d, p, a]) => { store.set('admin_key', key); setData(d); setPeople(p); setAgents(a); setErr(''); })
     .catch(e => setErr(e.message)), [api, key]);
   useEffect(() => { if (key) load(); }, [key, load]);
+
+  // Sets one person's role on one board: '' removes, 'member' and 'admin' add or update. The
+  // grid is redrawn from the server's answer rather than patched locally, so a refusal (the
+  // last admin of a board, say) leaves the screen showing what is actually true.
+  const setRole = async (person, board, role) => {
+    setBusy(person.id + ':' + board.slug);
+    try {
+      await api('/memberships', role === '' ? 'DELETE' : 'POST',
+        { slug: board.slug, personId: person.id, ...(role === '' ? {} : { isAdmin: role === 'admin' }) });
+      setErr('');
+    } catch (e) { setErr(e.message); }
+    await load();
+    setBusy('');
+  };
 
   const create = async (e) => {
     e.preventDefault();
@@ -79,28 +99,19 @@ export default function Admin() {
       </div>
       <div className="admin">
         {err && <div className="err">{err}</div>}
-        {!data ? <p className="empty">Loading…</p> : <>
-          <section>
-            <h3>Boards <span>{data.boards.length}</span></h3>
-            <p className="hint">Your admin key also opens any board.</p>
-            <div className="ascroll">
-              <table className="atable">
-                <thead><tr><th>Board</th><th>To Do</th><th>In Progress</th><th>Stuck</th><th>Review</th><th>Done</th><th>Last activity</th></tr></thead>
-                <tbody>
-                  {data.boards.map(b => (
-                    <tr key={b.slug}>
-                      <td><a href={'/' + b.slug}>{b.name}</a><span className="slug">/{b.slug}</span></td>
-                      <td>{b.todo}</td><td>{b.in_progress}</td>
-                      <td className={b.stuck ? 'hot' : ''}>{b.stuck}</td>
-                      <td className={b.review ? 'hot' : ''}>{b.review}</td><td>{b.done}</td>
-                      <td>{b.last_activity ? timeAgo(b.last_activity) : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
+        {!data || !people || !agents ? <p className="empty">Loading…</p> : <>
+          <div className="tabs" role="tablist">
+            {TABS.map(([id, label]) => (
+              <button key={id} role="tab" aria-selected={tab === id} className={'tab' + (tab === id ? ' on' : '')}
+                onClick={() => setTab(id)}>{label}</button>
+            ))}
+          </div>
+          {tab === 'people' && <PeopleGrid people={people} busy={busy} setRole={setRole} />}
+          {tab === 'agents' && <AgentGrid agents={agents} people={people} />}
+          {tab === 'boards' && <BoardsTab data={data} people={people} agents={agents} />}
+          {tab === 'attention' && <Attention people={people} agents={agents} goto={setTab} />}
 
+          {tab === 'boards' && <>
           <section>
             <h3>Waiting for your review <span>{data.review.length}</span></h3>
             {cardList(data.review, 'Nothing in Review.')}
@@ -175,8 +186,184 @@ export default function Admin() {
               </div>
             )}
           </section>
+          </>}
         </>}
       </div>
     </>
+  );
+}
+
+const TABS = [['people', 'People × boards'], ['agents', 'Agents × boards'], ['boards', 'Boards'], ['attention', 'Attention']];
+// A wake is healthy only on a 2xx. 'timeout' and 'error' are what the sender records when no
+// response came at all, and they are exactly as broken as a 500, so anything that is not a
+// 2xx counts. null means no wake has been delivered yet, which is not a failure.
+const wakeBad = (a) => !!a.webhookUrl && !!a.lastDeliveryStatus && !/^2\d\d$/.test(a.lastDeliveryStatus);
+
+function PeopleGrid({ people, busy, setRole }) {
+  const { people: list, boards, counts } = people;
+  return (
+    <section>
+      <h3>People <span>{counts.total}</span></h3>
+      <p className="hint">Pick a role to change a membership. Removing someone from a board never deletes their account, and a board's last admin cannot be removed or demoted.</p>
+      {list.length === 0 ? <div className="empty">No people yet.</div> : (
+        <div className="ascroll">
+          <table className="atable grid">
+            <thead><tr><th>Person</th>{boards.map(b => <th key={b.slug}><a href={'/' + b.slug + '/settings'}>{b.name}</a></th>)}</tr></thead>
+            <tbody>
+              {list.map(p => (
+                <tr key={p.id}>
+                  <td>
+                    <b>{p.displayName}</b>
+                    {p.isMaster && <span className="badge">master</span>}
+                    {p.neverSignedIn && <span className="badge warn">never signed in</span>}
+                    <span className="sub">{p.username}{p.boards.length === 0 ? ' · on no board' : ''}</span>
+                  </td>
+                  {boards.map(b => {
+                    const m = p.boards.find(x => x.slug === b.slug);
+                    const role = m ? (m.isAdmin ? 'admin' : 'member') : '';
+                    return (
+                      <td key={b.slug} className={'cell ' + (role || 'none')}>
+                        <select value={role} disabled={busy === p.id + ':' + b.slug}
+                          aria-label={p.displayName + ' on ' + b.name}
+                          onChange={e => setRole(p, b, e.target.value)}>
+                          <option value="">—</option>
+                          <option value="member">member</option>
+                          <option value="admin">admin</option>
+                        </select>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AgentGrid({ agents, people }) {
+  const boards = people.boards;
+  // Agents belong to exactly one board, so a row is a name and the grid shows where that name
+  // is in use. Grouping by name makes an agent that serves several boards read as one line.
+  const rows = new Map();
+  for (const a of agents.agents) {
+    const k = a.name.toLowerCase();
+    if (!rows.has(k)) rows.set(k, { name: a.name, at: {} });
+    rows.get(k).at[a.board.slug] = a;
+  }
+  return (
+    <section>
+      <h3>Agents <span>{agents.counts.total}</span></h3>
+      <p className="hint">Read-only. Tokens, scope and wakes are changed in each board's Settings. Stale means not seen for {agents.staleDays}+ days.</p>
+      {rows.size === 0 ? <div className="empty">No agents yet.</div> : (
+        <div className="ascroll">
+          <table className="atable grid">
+            <thead><tr><th>Agent</th>{boards.map(b => <th key={b.slug}>{b.name}</th>)}</tr></thead>
+            <tbody>
+              {[...rows.values()].map(r => (
+                <tr key={r.name}>
+                  <td><b>{r.name}</b></td>
+                  {boards.map(b => {
+                    const a = r.at[b.slug];
+                    if (!a) return <td key={b.slug} className="cell none">—</td>;
+                    return (
+                      <td key={b.slug} className="cell agent">
+                        <a href={'/' + b.slug + '/settings'}>{a.scope}</a>
+                        {a.disabled && <span className="badge warn">disabled</span>}
+                        <span className="sub">{a.mayFinish ? 'may finish' : 'cannot finish'}</span>
+                        <span className={'sub' + (wakeBad(a) ? ' hot' : '')}>
+                          {a.webhookUrl ? 'wake ' + (a.lastDeliveryStatus || 'not yet sent') : 'no wake'}
+                        </span>
+                        <span className={'sub' + (a.stale ? ' hot' : '')}>
+                          {a.lastSeenAt ? 'seen ' + timeAgo(a.lastSeenAt) : 'never seen'}
+                        </span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function BoardsTab({ data, people, agents }) {
+  const flags = Object.fromEntries(people.boards.map(b => [b.slug, b]));
+  const count = (rows, slug, pick) => rows.filter(r => pick(r) === slug).length;
+  return (
+    <section>
+      <h3>Boards <span>{data.boards.length}</span></h3>
+      <p className="hint">Your admin key also opens any board.</p>
+      <div className="ascroll">
+        <table className="atable">
+          <thead><tr><th>Board</th><th>People</th><th>Agents</th><th>Cards</th><th>Passphrase</th><th>Approval gate</th><th>Last activity</th></tr></thead>
+          <tbody>
+            {data.boards.map(b => {
+              const f = flags[b.slug] || {};
+              const cards = b.todo + b.in_progress + b.stuck + b.review + b.done;
+              return (
+                <tr key={b.slug}>
+                  <td><a href={'/' + b.slug}>{b.name}</a><span className="slug">/{b.slug}</span></td>
+                  <td>{count(people.people.flatMap(p => p.boards.map(x => x.slug)), b.slug, x => x)}</td>
+                  <td>{count(agents.agents, b.slug, a => a.board.slug)}</td>
+                  <td>{cards}</td>
+                  <td className={f.hasPassphrase ? 'hot' : ''}>{f.hasPassphrase ? 'still set' : 'none'}</td>
+                  <td>{f.reviewGate ? 'on' : 'off'}</td>
+                  <td>{b.last_activity ? timeAgo(b.last_activity) : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// Things that are true and that nobody is looking at: none of these raises an error anywhere
+// an admin would see it, which is why they are collected here. Each row says where it is
+// fixed, because a list of problems with no way to act on them gets read once and ignored.
+function Attention({ people, agents, goto }) {
+  const rows = [];
+  for (const a of agents.agents) {
+    if (a.stale && !a.disabled) rows.push({ k: 'stale-' + a.id, kind: 'Agent quiet',
+      what: `${a.name} on ${a.board.name}`, detail: a.lastSeenAt ? 'last seen ' + timeAgo(a.lastSeenAt) : 'never seen',
+      href: '/' + a.board.slug + '/settings' });
+    if (wakeBad(a)) rows.push({ k: 'wake-' + a.id, kind: 'Wake failing',
+      what: `${a.name} on ${a.board.name}`, detail: 'last delivery ' + a.lastDeliveryStatus,
+      href: '/' + a.board.slug + '/settings' });
+  }
+  for (const p of people.people) {
+    if (p.neverSignedIn) rows.push({ k: 'never-' + p.id, kind: 'Never signed in',
+      what: p.displayName, detail: p.username, tab: 'people' });
+    if (p.boards.length === 0) rows.push({ k: 'none-' + p.id, kind: 'On no board',
+      what: p.displayName, detail: 'can sign in and reach nothing', tab: 'people' });
+  }
+  for (const b of people.boards) {
+    if (b.hasPassphrase) rows.push({ k: 'pass-' + b.slug, kind: 'Passphrase still set',
+      what: b.name, detail: 'a shared secret that names nobody', href: '/' + b.slug + '/settings' });
+  }
+  return (
+    <section>
+      <h3>Attention <span>{rows.length}</span></h3>
+      <p className="hint">Quiet agents are those not seen for {agents.staleDays}+ days; disabled agents are left out.</p>
+      {rows.length === 0 ? <div className="empty">Nothing needs attention.</div> : (
+        <ul className="alist">
+          {rows.map(r => (
+            <li key={r.k}>
+              <b>{r.kind}</b>
+              {r.href ? <a href={r.href}>{r.what}</a>
+                : <button className="linkish" onClick={() => goto(r.tab)}>{r.what}</button>}
+              <span>{r.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

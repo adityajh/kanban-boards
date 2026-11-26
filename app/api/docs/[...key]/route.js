@@ -44,7 +44,7 @@ export const PUT = withTenant(async (req, { params }, t, c) => {
   if (Buffer.byteLength(body) > MAX_BYTES) {
     return json({ error: `body must be under ${MAX_BYTES} bytes` }, 413);
   }
-  const audience = b.audience || defaultAudience(c, t);
+  const audience = b.audience || defaultAudience();
   if (!AUDIENCES.includes(audience)) {
     return json({ error: `audience must be one of ${AUDIENCES.join(', ')}` }, 400);
   }
@@ -103,7 +103,7 @@ export const POST = withTenant(async (req, { params }, t, c) => {
   const stamp = `\n\n---\n${whoami(c)} · ${new Date().toISOString()}\n\n`;
 
   if (!existing) {
-    const audience = b.audience || defaultAudience(c, t);
+    const audience = b.audience || defaultAudience();
     if (!AUDIENCES.includes(audience)) {
       return json({ error: `audience must be one of ${AUDIENCES.join(', ')}` }, 400);
     }

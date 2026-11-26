@@ -465,7 +465,12 @@ NOTE=$(curl -s -X POST -H "$AGH" -H "$CT" $B/api/cards/$A_CARD/notes -d "$LIE")
 check "an agent cannot sign as someone else" zz-test-agent "$(echo "$NOTE" | jget 'd["author"]')"
 
 echo "-- audience"
-check "a card an agent creates is agent_only" agent_only "$(curl -s -H "$AGH" $B/api/cards/$A_CARD | jget 'd["audience"]')"
+# 015: nothing an agent writes is hidden by default. Whether a card is agent WORK is now a
+# question about its assignee, which the board UI asks; audience says only whether people
+# alone may read it.
+check "a card an agent creates is readable by everyone" both "$(curl -s -H "$AGH" $B/api/cards/$A_CARD | jget 'd["audience"]')"
+check "and an agent's card is assigned to that agent, which is what makes it agent work" zz-test-agent "$(curl -s -H "$AGH" $B/api/cards/$A_CARD | jget 'd["assignee"]')"
+check "agent_only is no longer a value the API accepts" 400 "$(code -X POST -H "$AGH" -H "$CT" $B/api/cards -d '{"title":"zz audience probe","audience":"agent_only"}')"
 HUMAN='{"title":"zz human only card","audience":"human_only"}'
 H_CARD=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d "$HUMAN" | jget 'd["id"]')
 P_CARD=$(curl -s -X POST -H "$ADM" -H "$JT" -H "$CT" $B/api/cards -d '{"title":"zz person card"}' | jget 'd["id"]')
@@ -507,7 +512,7 @@ DOC_STALE='{"body":"third version","expected_version":1}'
 check "doc bodies are valid json" OK "$(printf '%s' "$DOC$DOC2$DOC_STALE" | python3 -c 'import sys;print("OK")')"
 check "a document is created at its key" 201 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d "$DOC")"
 check "it reads back by key" "first version" "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget 'd["body"]')"
-check "an agent's document defaults to agent_only" agent_only "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget 'd["audience"]')"
+check "an agent's document is readable by everyone" both "$(curl -s -H "$AGH" $B/api/docs/zz/brief | jget 'd["audience"]')"
 check "the list carries no bodies" False "$(curl -s -H "$AGH" $B/api/docs | jget "any('body' in x for x in d)")"
 check "the right version replaces it" 200 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d "$DOC2")"
 check "a stale version is refused" 409 "$(code -X PUT -H "$AGH" -H "$CT" $B/api/docs/zz/brief -d "$DOC_STALE")"

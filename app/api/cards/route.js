@@ -46,7 +46,7 @@ export const POST = withTenant(async (req, ctx, t, c) => {
   // through the same gate; otherwise the gate would be bypassed by POSTing instead of PATCHing.
   const gated = approvalRefusal(status, t, c);
   if (gated) return json({ error: gated }, 403);
-  const audience = b.audience || defaultAudience(c, t);
+  const audience = b.audience || defaultAudience();
   if (!AUDIENCES.includes(audience)) {
     return json({ error: `audience must be one of ${AUDIENCES.join(', ')}` }, 400);
   }

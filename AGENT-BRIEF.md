@@ -49,11 +49,14 @@ Columns are `todo`, `in_progress`, `stuck`, `review`, `done`. `stuck` sits besid
 `POST` and `PATCH`, because a card with an invented status renders in no column and would
 be lost.
 
-A card you create is `agent_only` on most boards — yours to work in, invisible on the team's
-board until you decide a person should see it. A board may set its default to `both`, so
-read what `GET /cards` gives a card you just made rather than assuming. Set
-`audience: "both"` when you want it looked at. **A card in Review is always visible to
-people**, whatever its audience, because an approval nobody can see is a card stuck forever.
+Nothing you write is hidden by default. What the board calls **agent work**, and lets people
+fold out of the way, is simply a card **assigned to you** — so handing a card to a person is
+all it takes to put it on their board, and it stops being yours the moment you do. There is
+no field for this and nothing for you to set. A card in Review is always visible either way,
+because an approval nobody can see is a card stuck forever.
+
+`audience` is a different thing and now means one thing only: `human_only` marks a row that
+people alone may read. You are never served one, and you cannot set one.
 
 ### On a gated board, check before you mark work done
 
