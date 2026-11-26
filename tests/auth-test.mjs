@@ -18,6 +18,7 @@ import { splitBlocks, hasDiagram } from '../lib/markup.mjs';
 import {
   slugifySection, withSectionIds, findSection, sectionRefusal, applySectionPatch,
   moveSection, metricKeyRefusal, validSectionId, SECTION_FIELDS,
+  periodRefusal, applyPeriodPatch, findPeriod, planPeriods, PERIOD_FIELDS,
 } from '../lib/plan-sections.mjs';
 
 let pass = 0, fail = 0;
@@ -842,6 +843,104 @@ await t('a plan with no metrics at all orphans everything recorded', () => {
   // The revert case: going back to a version that predates a metric.
   assert.ok(metricKeyRefusal({}, ['contacted']));
   assert.ok(metricKeyRefusal(null, ['contacted']));
+});
+
+console.log('== periods: the month is open, the numbers are not');
+
+// Adding a period was master-admin-only along with the rest of the plan config, which
+// blocked an agent every month on a calendar fact. A period with no targets asserts
+// nothing; a target is what an actual is judged against. So the split runs between them,
+// and `targets` being refused to the wrong caller is a 403 decided in the route — these
+// checks cover what is VALID, which is a different question.
+const METRICS = ['contacted', 'engaged', 'enrolled'];
+
+await t('a period needs an id when it is being created', () => {
+  assert.strictEqual(periodRefusal({ id: '2026-12' }, { partial: false }), null);
+  assert.strictEqual(periodRefusal({}, { partial: false }).field, 'id');
+  assert.strictEqual(periodRefusal({ label: 'Dec 2026' }, { partial: false }).field, 'id');
+});
+
+await t('an id must be usable, and ids like 2026-11 are the point', () => {
+  for (const id of ['2026-11', '6-dec', 'q1', 'fy2027.h1']) {
+    assert.strictEqual(periodRefusal({ id }, { partial: false }), null, id);
+  }
+  for (const id of ['', '  ', 'has space', '-leading', 'a'.repeat(65)]) {
+    assert.strictEqual(periodRefusal({ id }, { partial: false }).field, 'id', id);
+  }
+});
+
+await t('a period id is never reused, and never changed afterwards', () => {
+  const taken = ['2026-11', '2026-12'];
+  assert.ok(periodRefusal({ id: '2026-11' }, { partial: false, taken }));
+  assert.match(periodRefusal({ id: '2026-11' }, { partial: false, taken }).error, /already has a period/);
+  assert.strictEqual(periodRefusal({ id: '2026-11' }, { partial: false, taken: [] }), null);
+  // Case-insensitively, like every other id on the board.
+  assert.ok(periodRefusal({ id: 'Q1' }, { partial: false, taken: ['q1'] }));
+  // And an edit cannot move it, because the actuals filed against it point at the id.
+  assert.strictEqual(periodRefusal({ id: '2027-01' }).field, 'id');
+});
+
+await t('an unknown field is refused rather than stored', () => {
+  assert.strictEqual(periodRefusal({ target: 500 }).field, 'target');
+  assert.strictEqual(periodRefusal({ note: 'x' }).field, 'note');
+  for (const f of PERIOD_FIELDS) {
+    assert.strictEqual(periodRefusal({ [f]: f === 'targets' ? {} : 'x' }), null, f);
+  }
+});
+
+await t('a label is text, or null to clear it', () => {
+  assert.strictEqual(periodRefusal({ label: 'End of May' }), null);
+  assert.strictEqual(periodRefusal({ label: null }), null);
+  assert.strictEqual(periodRefusal({ label: 42 }).field, 'label');
+});
+
+await t('a target must name a metric this board tracks', () => {
+  const o = { metricKeys: METRICS };
+  assert.strictEqual(periodRefusal({ targets: { contacted: 400, enrolled: 2 } }, o), null);
+  assert.strictEqual(periodRefusal({ targets: { installs: 400 } }, o).field, 'targets.installs');
+  assert.match(periodRefusal({ targets: { installs: 1 } }, o).error, /does not track/);
+  // A board that declares no metrics is not yet checkable, so nothing is refused on that
+  // ground — the same latitude metricKeys(null) gives an actual.
+  assert.strictEqual(periodRefusal({ targets: { anything: 1 } }, {}), null);
+});
+
+await t('a target is a number, or null for "not set yet"', () => {
+  const o = { metricKeys: METRICS };
+  assert.strictEqual(periodRefusal({ targets: { contacted: 0 } }, o), null);
+  assert.strictEqual(periodRefusal({ targets: { contacted: null } }, o), null);
+  assert.strictEqual(periodRefusal({ targets: { contacted: '400' } }, o).field, 'targets.contacted');
+  assert.strictEqual(periodRefusal({ targets: { contacted: NaN } }, o).field, 'targets.contacted');
+  assert.strictEqual(periodRefusal({ targets: [400] }, o).field, 'targets');
+  assert.strictEqual(periodRefusal({ targets: 'lots' }, o).field, 'targets');
+  assert.strictEqual(periodRefusal({ targets: null }, o), null, 'null clears them all');
+});
+
+await t('contact details cannot reach the board through a period', () => {
+  assert.ok(periodRefusal({ label: 'ask adi@example.com' }, { findContact: findContactDetail }));
+  assert.strictEqual(periodRefusal({ label: 'End of May 2027' }, { findContact: findContactDetail }), null);
+});
+
+await t('targets MERGE, where a section\'s arrays replace', () => {
+  // Setting one target must not silently drop the others: an agent told to update the
+  // webinar number has no business clearing the funnel.
+  const was = { id: '2026-12', label: 'Dec', targets: { contacted: 400, enrolled: 2 } };
+  assert.deepStrictEqual(applyPeriodPatch(was, { targets: { enrolled: 5 } }).targets,
+    { contacted: 400, enrolled: 5 });
+  assert.deepStrictEqual(applyPeriodPatch(was, { label: 'December' }).targets,
+    { contacted: 400, enrolled: 2 });
+  assert.ok(!('label' in applyPeriodPatch(was, { label: null })));
+  assert.ok(!('targets' in applyPeriodPatch(was, { targets: null })), 'null drops them wholesale');
+  assert.strictEqual(applyPeriodPatch(was, { id: 'hijacked' }).id, '2026-12');
+});
+
+await t('periods are found by id, case-insensitively, and absent is null', () => {
+  const plan = { periods: [{ id: '2026-11' }, { id: 'Q1' }] };
+  assert.strictEqual(findPeriod(plan, '2026-11').index, 0);
+  assert.strictEqual(findPeriod(plan, 'q1').index, 1);
+  assert.strictEqual(findPeriod(plan, '2027-01'), null);
+  assert.strictEqual(findPeriod({}, 'q1'), null);
+  assert.deepStrictEqual(planPeriods({}), []);
+  assert.deepStrictEqual(planPeriods(null), []);
 });
 
 console.log(`\npassed ${pass}, failed ${fail}`);

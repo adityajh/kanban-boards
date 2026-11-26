@@ -574,10 +574,12 @@ config.plan = {
 }
 ```
 
-`goal`, `metrics` and `periods` are set through `PATCH /settings` like any other config, and
-**only by a master admin**: they are the board's constitution, and changing the metric set
+`goal` and `metrics` are set through `PATCH /settings` like any other config, and **only by
+a master admin**: they are the board's constitution, and changing the metric set
 reinterprets every number already recorded. A board admin editing settings gets `403` for
 the `plan` key alone.
+
+`sections` and `periods` have their own endpoints below, and their own narrower rules.
 
 `sections` are different, and since 26 Nov have their own endpoints below. Section prose can
 be wrong and be fixed without rewriting history — a sentence describing the referral switch
@@ -617,6 +619,44 @@ replace rather than merge, `position` moves the section, and `id` cannot be chan
 
 A **board passphrase is `403`** on every one of these: its edit would land in the history as
 "board passphrase", and the whole value of the history is that each row names someone.
+
+### Periods (26 Nov)
+
+| | |
+|---|---|
+| `GET /plan/periods` | ids, labels, positions, whether targets are set, and the board's metric keys |
+| `GET /plan/periods/:id` | one period in full |
+| `POST /plan/periods` | add one — a person, an agent, or `ADMIN_KEY` |
+| `PATCH /plan/periods/:id` | change its `label` or move it |
+| `DELETE /plan/periods/:id` | a signed-in person only |
+
+```json
+POST /plan/periods
+{ "id": "2027-01", "label": "Jan 2027", "position": 0, "expected_version": 9 }
+```
+
+**The month is open. The numbers are not.** Anyone who can be named may add a period and
+label it; `targets` is `403` for anyone who may not edit the plan, and that refusal is a
+`403` rather than a `422` because the value is fine and the caller is not.
+
+The reason the line runs between them: a period with no targets asserts nothing — it is an
+empty column saying "January exists and we will be measuring it", which is a calendar fact.
+A target is what an `actual` is judged against, so moving one from 800 to 600 turns last
+month's miss into a hit without anybody touching the figure. That is the same argument as
+the metric guard.
+
+An id is **supplied, not derived** — unlike a section's. `2026-11` is chosen to line up with
+the `actual` rows filed against it, and inventing one from a label would break that
+correspondence silently. It cannot be changed afterwards, and a duplicate is `422`.
+
+`targets` **merge** rather than replace, where a section's arrays replace: setting the
+webinar number must not silently clear the funnel. Send `"targets": null` to drop them all.
+A target naming a metric the board does not declare is `422`, same as an `actual`'s would be.
+
+**Deleting a period with actuals filed against it is `409`**, counting them. The link is the
+id and nothing else, so it checks for an `actual` whose own id matches the period's rather
+than inferring anything from the metrics they share — otherwise deleting a 2027 period would
+be refused because November has figures.
 
 ### History and revert
 

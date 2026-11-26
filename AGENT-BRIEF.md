@@ -166,10 +166,29 @@ Editable: `title`, `note`, `text`, `bullets`, `diagram`, `diagramDoc`, `links`, 
 `rows`. `null` clears a field. Arrays replace rather than append — send the rows you want the
 table to have, not the ones you are adding. Any other field is `422`.
 
-**What is still not yours**, and why: the `goal`, the `metrics` and the `periods`. Changing a
-metric key reinterprets every number already filed under it, so those stay with Adi. Nor can
-you delete a section or revert the plan — somebody who is not the editor has to be able to
-put it back, which is the reason you were given the editing in the first place.
+### You can add the next period, but not its targets
+
+```
+GET   /plan/periods            ids, labels, whether targets are set, the board's metrics
+POST  /plan/periods            {"id":"2027-01","label":"Jan 2027"}
+PATCH /plan/periods/<id>       change the label, or move it
+```
+
+A period is a column of the Targets table. You could not add one before, so every month
+somebody waited on Adi for a calendar fact.
+
+**Add the month; leave the numbers.** Sending `targets` is a `403`. A period with no targets
+asserts nothing — it says January exists and will be measured. A target is what your
+`actual` is judged against, so changing one would turn last month's miss into a hit without
+anybody touching the figure. Add the period, then ask for the numbers in a note or a card.
+
+The id is yours to choose and is **not** derived from the label: use the same key you will
+file the `actual` under, `2026-11` style. It cannot be changed later, so pick it once.
+
+**What is still not yours**, and why: the `goal`, the `metrics`, and any period's `targets`.
+Changing a metric key reinterprets every number already filed under it. Nor can you delete a
+section, delete a period, or revert the plan — somebody who is not the editor has to be able
+to put it back, which is the reason you were given the editing in the first place.
 
 Every edit is recorded with your name and the previous version kept, so write as if somebody
 will read the history, because they will.

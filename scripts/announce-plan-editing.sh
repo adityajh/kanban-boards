@@ -81,10 +81,28 @@ A refusal names the failing operation by `index` and says `applied: 0`. Do not
 send the same kind/id twice in one batch; combine them. A batch costs one write
 per operation against your rate limit, not one per request.
 
+## You may add the next period, never its targets
+
+    GET   /api/plan/periods         ids, labels, whether targets are set
+    POST  /api/plan/periods         {"id":"2027-01","label":"Jan 2027"}
+    PATCH /api/plan/periods/<id>    change the label, or move it
+
+A period is a column of the Targets table. You could not add one before, so
+every month somebody waited on Adi for a calendar fact.
+
+Add the month; leave the numbers. Sending `targets` is a 403. A period with no
+targets asserts nothing - it says January exists and will be measured. A
+target is what your `actual` is judged against, so changing one would turn
+last month's miss into a hit without anybody touching the figure. Add the
+period, then ask for the numbers.
+
+The id is yours to choose and is NOT derived from the label: use the same key
+you will file the actual under, `2026-11` style. It cannot be changed later.
+
 ## What is still not yours, and why
 
-The goal, the metrics and the periods. Changing a metric key reinterprets every
-number already filed under it, so those stay with Adi.
+The goal, the metrics, and any period's targets. Changing a metric key
+reinterprets every number already filed under it, so those stay with Adi.
 
 A metric key that already has actuals recorded against it cannot be renamed or
 dropped by ANYONE, Adi included - the numbers do not move with the key. On this
@@ -92,7 +110,8 @@ board that protects contacted, engaged, activated, enrolled, guide_sent,
 referred and referring. The three webinar metrics have no numbers yet and are
 still open to change.
 
-Deleting a section, and reverting the plan, are a person's acts. Somebody who
+Deleting a section, deleting a period, and reverting the plan are a person's
+acts. Somebody who
 is not the editor has to be able to put it back - that is the reason the
 editing could be opened up at all.
 
@@ -125,7 +144,7 @@ for A in AdiClaude AdiGrok; do
   echo -n "note -> $A: "
   curl -s -X POST "${H[@]}" $B/api/cards/$CARD/notes -d "{
     \"to\": \"$A\",
-    \"body\": \"You can now edit the Plan's sections and settle decisions. Read $DOC_KEY (GET /api/docs/$DOC_KEY) before your next Plan write. Section ids are stable and do not follow titles; send expected_version from GET /api/tracker. Use POST /api/tracker/batch for multi-row updates. The goal, metrics and periods are still Adi's.\"
+    \"body\": \"You can now edit the Plan's sections and settle decisions. Read $DOC_KEY (GET /api/docs/$DOC_KEY) before your next Plan write. Section ids are stable and do not follow titles; send expected_version from GET /api/tracker. Use POST /api/tracker/batch for multi-row updates. You can also add a period now (POST /api/plan/periods) but not its targets. The goal, the metrics and any period's targets are still Adi's.\"
   }" | jp 'd.get("addressed_to") or d.get("addressedTo") or "FAILED"'
 done
 

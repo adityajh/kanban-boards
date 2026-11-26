@@ -1245,6 +1245,54 @@ check "an agent may not delete a section" 403 "$(code -X DELETE -H "$PLA" -H "$C
 check "a person may" 200 "$(code -X DELETE -H "$ADM" -H "$PLT" -H "$CT" $B/api/plan/sections/ground-rules-2 -d '{}')"
 check "and it is gone" 404 "$(code -H "$PLH" $B/api/plan/sections/ground-rules-2)"
 
+echo "-- periods: an agent may add the month, never the numbers"
+check "the period list carries what is set" "p1:True" "$(curl -s -H "$PLH" $B/api/plan/periods | jget "':'.join([d['periods'][0]['id'], str(d['periods'][0]['hasTargets'])])")"
+check "and which metrics the board tracks" "contacted,engaged" "$(curl -s -H "$PLH" $B/api/plan/periods | jget "','.join(d['metrics'])")"
+check "a board with no plan has no periods" 404 "$(code -H "$JBJ" $B/api/plan/periods)"
+
+check "an agent adds a period with no targets -> 201" 201 "$(code -X POST -H "$PLA" -H "$CT" $B/api/plan/periods -d '{"id":"2027-01","label":"Jan 2027"}')"
+check "it comes back with no targets set" False "$(curl -s -H "$PLH" $B/api/plan/periods/2027-01 | jget "'targets' in d['period']")"
+check "and the event records who added it" True "$(curl -s -H "$ADM" -H "$PLT" "$B/api/events?limit=200" | jget "len(d['events'])>0 and any(e['verb']=='plan.period.added' and e['actor']['name']=='zz-plan-agent' for e in d['events'])")"
+# The whole point of the 26 Nov split: the month is a calendar fact, the target is a
+# judgement every actual is measured against.
+check "an agent setting targets -> 403" 403 "$(code -X POST -H "$PLA" -H "$CT" $B/api/plan/periods -d '{"id":"2027-02","targets":{"contacted":500}}')"
+check "the refusal says to ask for the numbers" True "$(curl -s -X POST -H "$PLA" -H "$CT" $B/api/plan/periods -d '{"id":"2027-02","targets":{"contacted":500}}' | jget "'master admin' in d['error']")"
+check "and no such period was created" 404 "$(code -H "$PLH" $B/api/plan/periods/2027-02)"
+check "a passphrase adds nothing" 403 "$(code -X POST -H "$PLH" -H "$CT" $B/api/plan/periods -d '{"id":"2027-03"}')"
+check "a master admin may set targets" 201 "$(code -X POST -H "$ADM" -H "$PLT" -H "$CT" $B/api/plan/periods -d '{"id":"2027-02","label":"Feb 2027","targets":{"contacted":500}}')"
+check "and they read back" 500 "$(curl -s -H "$PLH" $B/api/plan/periods/2027-02 | jget "d['period']['targets']['contacted']")"
+
+check "a duplicate id -> 422" 422 "$(code -X POST -H "$PLA" -H "$CT" $B/api/plan/periods -d '{"id":"2027-01"}')"
+check "an id with a space -> 422" 422 "$(code -X POST -H "$PLA" -H "$CT" $B/api/plan/periods -d '{"id":"next quarter"}')"
+check "no id at all -> 422" 422 "$(code -X POST -H "$PLA" -H "$CT" $B/api/plan/periods -d '{"label":"someday"}')"
+check "an unknown field -> 422" 422 "$(code -X POST -H "$PLA" -H "$CT" $B/api/plan/periods -d '{"id":"2027-04","note":"x"}')"
+check "a target naming an untracked metric -> 422" 422 "$(code -X POST -H "$ADM" -H "$PLT" -H "$CT" $B/api/plan/periods -d '{"id":"2027-05","targets":{"installs":5}}')"
+check "a target that is not a number -> 422" 422 "$(code -X POST -H "$ADM" -H "$PLT" -H "$CT" $B/api/plan/periods -d '{"id":"2027-05","targets":{"contacted":"lots"}}')"
+check "an email in a label -> 422" 422 "$(code -X POST -H "$PLA" -H "$CT" $B/api/plan/periods -d '{"id":"2027-05","label":"ask adi@example.com"}')"
+check "position puts a period first" "2027-01" "$(curl -s -o /dev/null -X PATCH -H "$PLA" -H "$CT" $B/api/plan/periods/2027-01 -d '{"position":0}'; curl -s -H "$PLH" $B/api/plan/periods | jget "d['periods'][0]['id']")"
+
+check "an agent may fix a label" 200 "$(code -X PATCH -H "$PLA" -H "$CT" $B/api/plan/periods/2027-01 -d '{"label":"January 2027"}')"
+check "and it landed" "January 2027" "$(curl -s -H "$PLH" $B/api/plan/periods/2027-01 | jget "d['period']['label']")"
+check "an agent may not touch targets" 403 "$(code -X PATCH -H "$PLA" -H "$CT" $B/api/plan/periods/2027-02 -d '{"targets":{"contacted":1}}')"
+check "the target is unchanged" 500 "$(curl -s -H "$PLH" $B/api/plan/periods/2027-02 | jget "d['period']['targets']['contacted']")"
+check "a master admin may, and targets MERGE rather than replace" 200 "$(code -X PATCH -H "$ADM" -H "$PLT" -H "$CT" $B/api/plan/periods/2027-02 -d '{"targets":{"engaged":9}}')"
+check "the new target is set" 9 "$(curl -s -H "$PLH" $B/api/plan/periods/2027-02 | jget "d['period']['targets']['engaged']")"
+check "and the old one survived the merge" 500 "$(curl -s -H "$PLH" $B/api/plan/periods/2027-02 | jget "d['period']['targets']['contacted']")"
+check "a stale expected_version -> 409" 409 "$(code -X PATCH -H "$PLA" -H "$CT" $B/api/plan/periods/2027-01 -d '{"label":"x","expected_version":1}')"
+check "changing a period id -> 422" 422 "$(code -X PATCH -H "$PLA" -H "$CT" $B/api/plan/periods/2027-01 -d '{"id":"2027-99"}')"
+check "a period that does not exist -> 404" 404 "$(code -X PATCH -H "$PLA" -H "$CT" $B/api/plan/periods/no-such -d '{"label":"x"}')"
+
+check "an agent may not delete a period" 403 "$(code -X DELETE -H "$PLA" -H "$CT" $B/api/plan/periods/2027-01 -d '{}')"
+check "a person may" 200 "$(code -X DELETE -H "$ADM" -H "$PLT" -H "$CT" $B/api/plan/periods/2027-01 -d '{}')"
+check "and it is gone" 404 "$(code -H "$PLH" $B/api/plan/periods/2027-01)"
+# Deleting a period that has numbers filed against it would leave them measured against
+# nothing, which is the same orphaning the metric guard exists to prevent.
+check "an actual is filed against 2027-02" 201 "$(code -X PUT -H "$PLA" -H "$CT" $B/api/tracker/actual/2027-02 -d '{"as_of":"2027-02-28","source":"test","contacted":120}')"
+check "deleting that period -> 409" 409 "$(code -X DELETE -H "$ADM" -H "$PLT" -H "$CT" $B/api/plan/periods/2027-02 -d '{}')"
+check "the refusal counts them" 1 "$(curl -s -X DELETE -H "$ADM" -H "$PLT" -H "$CT" $B/api/plan/periods/2027-02 -d '{}' | jget 'd["actuals"]')"
+check "the period is still there" 200 "$(code -H "$PLH" $B/api/plan/periods/2027-02)"
+check "and once the actual is gone it deletes" 200 "$(curl -s -o /dev/null -X DELETE -H "$PLA" $B/api/tracker/actual/2027-02; code -X DELETE -H "$ADM" -H "$PLT" -H "$CT" $B/api/plan/periods/2027-02 -d '{}')"
+
 echo "-- the config history"
 HIST=$(curl -s -H "$PLH" $B/api/plan/history)
 check "history lists every change" True "$(echo "$HIST" | jget 'len(d["versions"]) >= 7')"
