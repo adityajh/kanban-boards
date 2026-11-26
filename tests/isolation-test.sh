@@ -1060,6 +1060,146 @@ check "its token stops working at once" 401 "$(code -H "$AGH" $B/api/cards)"
 check "but the note it wrote keeps its name" True "$(curl -s -H "$ADM" -H "$JT" "$B/api/events?limit=200" | jget "any(e['actor']['name']=='zz-test-agent' for e in d['events'])")"
 curl -s -o /dev/null -X DELETE -H "$ADM" -H "$JT" $B/api/settings/agents/$RO_ID
 
+echo "== the plan: sections, history and batch writes (017)"
+# inditress and jbj have no plan, so these need a board that does. Three caller types are
+# exercised against it: an agent token, ADMIN_KEY (which isPerson() treats as a person —
+# it is the break-glass credential), and the board's own passphrase, which names nobody and
+# is refused every plan write.
+PB=zz-plan-board
+curl -s -o /dev/null -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/$PB -d "{\"confirm\":\"$PB\"}"
+PB_PLAN='{"goal":"ship the thing","metrics":[{"key":"contacted","label":"Contacted"},{"key":"engaged","label":"Engaged"}],"periods":[{"id":"p1","label":"End of May","targets":{"contacted":100}}],"sections":[{"title":"Ground rules","bullets":["one","two"]},{"title":"The math","columns":["a"],"rows":[{"a":"1"}]}]}'
+PB_BODY="{\"slug\":\"$PB\",\"name\":\"ZZ Plan Board\",\"config\":{\"names\":\"Adi\",\"plan\":$PB_PLAN}}"
+check "plan board body is valid json" OK "$(printf '%s' "$PB_BODY" | python3 -c 'import json,sys;json.load(sys.stdin);print("OK")')"
+PB_MADE=$(curl -s -X POST -H "$ADM" -H "$CT" -d "$PB_BODY" $B/api/admin/tenants)
+PB_KEY=$(echo "$PB_MADE" | jget 'd.get("passphrase","")')
+PBH="Authorization: Bearer $PB_KEY"
+PBT="X-Tenant: $PB"
+check "the plan board is created" True "$([ -n "$PB_KEY" ] && echo True || echo False)"
+PB_AG=$(curl -s -X POST -H "$ADM" -H "$PBT" -H "$CT" $B/api/settings/agents -d '{"name":"zz-plan-agent","scope":"write"}')
+PBA="Authorization: Bearer $(echo "$PB_AG" | jget 'd.get("token","")')"
+
+echo "-- sections are addressable, and their ids come from their titles"
+check "sections list carries ids" "ground-rules,the-math" "$(curl -s -H "$PBH" $B/api/plan/sections | jget "','.join(s['id'] for s in d['sections'])")"
+check "a new board starts at version 1 — the board as created" 1 "$(curl -s -H "$PBH" $B/api/plan/sections | jget 'd["planVersion"]')"
+check "GET /api/tracker carries planVersion too" 1 "$(curl -s -H "$PBH" $B/api/tracker | jget 'd["planVersion"]')"
+check "one section by id" "Ground rules" "$(curl -s -H "$PBH" $B/api/plan/sections/ground-rules | jget 'd["section"]["title"]')"
+check "an id is case-insensitive" 200 "$(code -H "$PBH" $B/api/plan/sections/GROUND-RULES)"
+check "a section that does not exist -> 404" 404 "$(code -H "$PBH" $B/api/plan/sections/no-such-section)"
+check "a board with no plan has no sections" 404 "$(code -H "$JBJ" $B/api/plan/sections)"
+check "nor a section on another board's plan" 404 "$(code -H "$JBJ" $B/api/plan/sections/ground-rules)"
+
+echo "-- who may edit a section"
+check "a passphrase cannot edit the plan" 403 "$(code -X PATCH -H "$PBH" -H "$CT" $B/api/plan/sections/the-math -d '{"title":"Nope"}')"
+check "the refusal says why" True "$(curl -s -X PATCH -H "$PBH" -H "$CT" $B/api/plan/sections/the-math -d '{"title":"Nope"}' | jget "'names nobody' in d['error']")"
+check "an agent may edit a section" 200 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/the-math -d '{"title":"The arithmetic","note":"checked"}')"
+check "the edit landed" "The arithmetic" "$(curl -s -H "$PBH" $B/api/plan/sections/the-math | jget 'd["section"]["title"]')"
+check "the id did not follow the title" 200 "$(code -H "$PBH" $B/api/plan/sections/the-math)"
+check "and the version moved" 2 "$(curl -s -H "$PBH" $B/api/plan/sections | jget 'd["planVersion"]')"
+check "the event names the agent" True "$(curl -s -H "$ADM" -H "$PBT" "$B/api/events?limit=200" | jget "any(e['verb']=='plan.section.updated' and e['actor']['name']=='zz-plan-agent' for e in d['events'])")"
+check "the event says which fields moved" True "$(curl -s -H "$ADM" -H "$PBT" "$B/api/events?limit=200" | jget "any(e['verb']=='plan.section.updated' and sorted(e['data'].get('fields',[]))==['note','title'] for e in d['events'])")"
+
+echo "-- the version check on a section edit"
+check "a stale expected_version -> 409" 409 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/the-math -d '{"title":"x","expected_version":0}')"
+check "the 409 says where the plan actually is" 2 "$(curl -s -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/the-math -d '{"title":"x","expected_version":0}' | jget 'd["current"]')"
+check "and nothing was written" "The arithmetic" "$(curl -s -H "$PBH" $B/api/plan/sections/the-math | jget 'd["section"]["title"]')"
+check "the right expected_version is accepted" 200 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/the-math -d '{"note":"again","expected_version":2}')"
+
+echo "-- what a section edit is refused"
+check "an unknown field -> 422" 422 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/ground-rules -d '{"heading":"wrong key"}')"
+check "changing the id -> 422" 422 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/ground-rules -d '{"id":"hijacked"}')"
+check "emptying the title -> 422" 422 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/ground-rules -d '{"title":"  "}')"
+check "an email in a table cell -> 422" 422 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/ground-rules -d '{"rows":[{"who":"gargi@example.com"}]}')"
+check "a mobile number in a bullet -> 422" 422 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/ground-rules -d '{"bullets":["ring 9876543210"]}')"
+check "bullets that are not a list -> 422" 422 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/ground-rules -d '{"bullets":"one"}')"
+check "an empty patch -> 400" 400 "$(code -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/ground-rules -d '{}')"
+check "a null clears a field" False "$(curl -s -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/the-math -d '{"note":null}' | jget "'note' in d['section']")"
+
+echo "-- adding, moving and deleting a section"
+ADDED=$(curl -s -X POST -H "$PBA" -H "$CT" $B/api/plan/sections -d '{"title":"Where each thing lives","note":"new"}')
+check "an agent may add a section" "where-each-thing-lives" "$(echo "$ADDED" | jget 'd["section"]["id"]')"
+check "a second section of the same name is numbered" "ground-rules-2" "$(curl -s -X POST -H "$PBA" -H "$CT" $B/api/plan/sections -d '{"title":"Ground rules"}' | jget 'd["section"]["id"]')"
+check "adding without a title -> 422" 422 "$(code -X POST -H "$PBA" -H "$CT" $B/api/plan/sections -d '{"note":"no title"}')"
+check "a passphrase cannot add one" 403 "$(code -X POST -H "$PBH" -H "$CT" $B/api/plan/sections -d '{"title":"Nope"}')"
+check "position puts a section first" "snapshots" "$(curl -s -X POST -H "$PBA" -H "$CT" $B/api/plan/sections -d '{"title":"Snapshots","position":0}' >/dev/null; curl -s -H "$PBH" $B/api/plan/sections | jget "d['sections'][0]['id']")"
+check "moving an existing section works" "the-math" "$(curl -s -o /dev/null -X PATCH -H "$PBA" -H "$CT" $B/api/plan/sections/the-math -d '{"position":0}'; curl -s -H "$PBH" $B/api/plan/sections | jget "d['sections'][0]['id']")"
+check "an agent may not delete a section" 403 "$(code -X DELETE -H "$PBA" -H "$CT" $B/api/plan/sections/ground-rules-2 -d '{}')"
+check "a person may" 200 "$(code -X DELETE -H "$ADM" -H "$PBT" -H "$CT" $B/api/plan/sections/ground-rules-2 -d '{}')"
+check "and it is gone" 404 "$(code -H "$PBH" $B/api/plan/sections/ground-rules-2)"
+
+echo "-- the config history"
+HIST=$(curl -s -H "$PBH" $B/api/plan/history)
+check "history lists every change" True "$(echo "$HIST" | jget 'len(d["versions"]) >= 7')"
+check "version 1 is the board as created" "board created" "$(echo "$HIST" | jget "[v for v in d['versions'] if v['version']==1][0]['change']")"
+check "newest first" True "$(echo "$HIST" | jget 'd["versions"][0]["version"] > d["versions"][-1]["version"]')"
+check "it says what moved" True "$(echo "$HIST" | jget "any('section the-math updated' in (v['change'] or '') for v in d['versions'])")"
+check "and who moved it" True "$(echo "$HIST" | jget "any(v['changedBy']=='zz-plan-agent' for v in d['versions'])")"
+check "an agent may read the history" 200 "$(code -H "$PBA" $B/api/plan/history)"
+check "one version comes back in full" True "$(curl -s -H "$PBH" "$B/api/plan/history?version=1" | jget "d['config']['plan']['sections'][1]['title']=='The math'")"
+check "a version that does not exist -> 404" 404 "$(code -H "$PBH" "$B/api/plan/history?version=999")"
+check "version 0 is not a version -> 400" 400 "$(code -H "$PBH" "$B/api/plan/history?version=0")"
+
+echo "-- revert"
+CUR=$(curl -s -H "$PBH" $B/api/plan/history | jget 'd["current"]')
+check "an agent may not revert" 403 "$(code -X POST -H "$PBA" -H "$CT" $B/api/plan/revert -d '{"version":1}')"
+check "reverting to the current version -> 409" 409 "$(code -X POST -H "$ADM" -H "$PBT" -H "$CT" $B/api/plan/revert -d "{\"version\":$CUR}")"
+check "reverting to a version that does not exist -> 404" 404 "$(code -X POST -H "$ADM" -H "$PBT" -H "$CT" $B/api/plan/revert -d '{"version":999}')"
+check "a person may revert to version 1" 200 "$(code -X POST -H "$ADM" -H "$PBT" -H "$CT" $B/api/plan/revert -d '{"version":1}')"
+check "the title is back" "The math" "$(curl -s -H "$PBH" $B/api/plan/sections/the-math | jget 'd["section"]["title"]')"
+check "the added section is gone" 404 "$(code -H "$PBH" $B/api/plan/sections/where-each-thing-lives)"
+check "a revert moves history FORWARD, never back" True "$(curl -s -H "$PBH" $B/api/plan/history | jget "d['current'] > $CUR")"
+check "so the reverted-away version is still readable" 200 "$(code -H "$PBH" "$B/api/plan/history?version=$CUR")"
+
+echo "-- the metric guard applies to everyone, master admin included"
+check "an actual is recorded under contacted" 201 "$(code -X PUT -H "$PBA" -H "$CT" $B/api/tracker/actual/a-1 -d '{"as_of":"2026-11-26","source":"test","contacted":5}')"
+DROP='{"config":{"plan":{"goal":"ship the thing","metrics":[{"key":"engaged"}],"sections":[]}}}'
+check "dropping a metric with actuals -> 409" 409 "$(code -X PATCH -H "$ADM" -H "$PBT" -H "$CT" $B/api/settings -d "$DROP")"
+check "the refusal names the key" True "$(curl -s -X PATCH -H "$ADM" -H "$PBT" -H "$CT" $B/api/settings -d "$DROP" | jget "d['error'].startswith('contacted:')")"
+RENAME='{"config":{"plan":{"goal":"ship the thing","metrics":[{"key":"contacted_v2"},{"key":"engaged"}],"sections":[]}}}'
+check "renaming it is the same refusal" 409 "$(code -X PATCH -H "$ADM" -H "$PBT" -H "$CT" $B/api/settings -d "$RENAME")"
+RELABEL='{"config":{"plan":{"goal":"ship the thing","metrics":[{"key":"contacted","label":"Reached out to"},{"key":"engaged"}],"sections":[{"title":"Ground rules"}]}}}'
+check "changing only its label is fine" 200 "$(code -X PATCH -H "$ADM" -H "$PBT" -H "$CT" $B/api/settings -d "$RELABEL")"
+check "a settings change is in the history too" True "$(curl -s -H "$PBH" $B/api/plan/history | jget "any('settings updated' in (v['change'] or '') for v in d['versions'])")"
+check "dropping a metric with NO actuals is fine" 200 "$(code -X PATCH -H "$ADM" -H "$PBT" -H "$CT" $B/api/settings -d '{"config":{"plan":{"goal":"g","metrics":[{"key":"contacted"}],"sections":[{"title":"Ground rules"}]}}}')"
+
+echo "-- batch tracker writes: all of it or none of it"
+B3='{"ops":[{"op":"put","kind":"status","id":"s-1","title":"one","lane":"now"},{"op":"put","kind":"status","id":"s-2","title":"two","lane":"waiting"},{"op":"put","kind":"milestone","id":"m-1","title":"ship","date":"2026-12-06"}]}'
+BR=$(curl -s -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d "$B3")
+check "three writes in one call" 3 "$(echo "$BR" | jget 'd["applied"]')"
+check "it says what each one did" "created,created,created" "$(echo "$BR" | jget "','.join(r['op'] for r in d['results'])")"
+check "the rows are really there" "one" "$(curl -s -H "$PBH" $B/api/tracker/status/s-1 | jget 'd["title"]')"
+check "one event per row, not one for the batch" 3 "$(curl -s -H "$ADM" -H "$PBT" "$B/api/events?limit=200" | jget "sum(1 for e in d['events'] if e['data'].get('batch')==3)")"
+
+echo "-- a batch that fails writes nothing at all"
+BAD='{"ops":[{"op":"patch","kind":"status","id":"s-1","title":"changed"},{"op":"put","kind":"status","id":"s-2","title":"no lane"}]}'
+BADR=$(curl -s -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d "$BAD")
+check "an invalid op fails the batch" 422 "$(code -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d "$BAD")"
+check "it names the operation by index" 1 "$(echo "$BADR" | jget 'd["index"]')"
+check "it says nothing was applied" 0 "$(echo "$BADR" | jget 'd["applied"]')"
+check "and the VALID op before it did not land" "one" "$(curl -s -H "$PBH" $B/api/tracker/status/s-1 | jget 'd["title"]')"
+S1V=$(curl -s -H "$PBH" $B/api/tracker/status/s-1 | jget 'd["version"]')
+STALE="{\"ops\":[{\"op\":\"patch\",\"kind\":\"status\",\"id\":\"s-1\",\"title\":\"x\",\"version\":99},{\"op\":\"patch\",\"kind\":\"status\",\"id\":\"s-2\",\"title\":\"y\",\"version\":$S1V}]}"
+check "a stale version fails the batch" 409 "$(code -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d "$STALE")"
+check "still nothing applied" "one" "$(curl -s -H "$PBH" $B/api/tracker/status/s-1 | jget 'd["title"]')"
+check "the same row twice -> 422" 422 "$(code -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d '{"ops":[{"op":"patch","kind":"status","id":"s-1","title":"a"},{"op":"patch","kind":"status","id":"s-1","title":"b"}]}')"
+check "an empty batch -> 422" 422 "$(code -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d '{"ops":[]}')"
+check "more than fifty -> 422" 422 "$(code -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d "{\"ops\":$(python3 -c 'import json;print(json.dumps([{"op":"put","kind":"status","id":"z-%d"%i,"title":"t","lane":"now"} for i in range(51)]))')}")"
+check "patching a row that does not exist -> 404" 404 "$(code -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d '{"ops":[{"op":"patch","kind":"status","id":"nope","title":"x"}]}')"
+check "a batch on a board with no plan -> 404" 404 "$(code -X POST -H "$JBJ" -H "$CT" $B/api/tracker/batch -d '{"ops":[{"op":"put","kind":"status","id":"s-1","title":"t","lane":"now"}]}')"
+check "a batch may patch and delete together" 2 "$(curl -s -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d '{"ops":[{"op":"patch","kind":"status","id":"s-1","lane":"done"},{"op":"delete","kind":"status","id":"s-2"}]}' | jget 'd["applied"]')"
+check "the patch applied" "done" "$(curl -s -H "$PBH" $B/api/tracker/status/s-1 | jget 'd["lane"]')"
+check "the delete applied" 404 "$(code -H "$PBH" $B/api/tracker/status/s-2)"
+
+echo "-- an agent may now settle a decision (26 Nov)"
+check "an agent proposes" 201 "$(code -X PUT -H "$PBA" -H "$CT" $B/api/tracker/decision/d-1 -d '{"title":"go","state":"proposed"}')"
+check "and may settle it" 200 "$(code -X PUT -H "$PBA" -H "$CT" $B/api/tracker/decision/d-1 -d '{"title":"go","state":"decided"}')"
+check "a passphrase still may not" 403 "$(code -X PUT -H "$PBH" -H "$CT" $B/api/tracker/decision/d-2 -d '{"title":"no","state":"decided"}')"
+check "a batch may settle one too" 1 "$(curl -s -X POST -H "$PBA" -H "$CT" $B/api/tracker/batch -d '{"ops":[{"op":"put","kind":"decision","id":"d-3","title":"also go","state":"decided"}]}' | jget 'd["applied"]')"
+
+echo "-- and the plan board goes away again"
+check "the plan board is deleted" "$PB" "$(curl -s -X DELETE -H "$ADM" -H "$CT" $B/api/admin/tenants/$PB -d "{\"confirm\":\"$PB\"}" | jget 'd.get("deleted",{}).get("slug","")')"
+check "no plan board is left behind" False "$(curl -s -H "$ADM" $B/api/admin/tenants | jget "any(b['slug']=='$PB' for b in d)")"
+check "its history went with it" 401 "$(code -H "$PBH" $B/api/plan/history)"
+
 echo "== cleanup"
 curl -s -o /dev/null -X DELETE -H "$JBJ" $B/api/cards/$JN_CARD
 LAST=$(curl -s -X DELETE -H "$ADM" -H "$JT" $B/api/settings/users/$MEMBER_ID)

@@ -15,6 +15,10 @@ import {
 } from '../lib/cards.mjs';
 import { rateLimitRefusal, retryAfterSeconds } from '../lib/ratelimit.mjs';
 import { splitBlocks, hasDiagram } from '../lib/markup.mjs';
+import {
+  slugifySection, withSectionIds, findSection, sectionRefusal, applySectionPatch,
+  moveSection, metricKeyRefusal, validSectionId, SECTION_FIELDS,
+} from '../lib/plan-sections.mjs';
 
 let pass = 0, fail = 0;
 const t = async (name, fn) => {
@@ -279,19 +283,31 @@ await t('contact details are refused wherever they appear', () => {
   assert.strictEqual(bad.field, 'detail');
 });
 
-await t('an agent may propose a decision and never settle one', () => {
+// Changed on 26 Nov. This used to assert that an agent may propose a decision and never
+// settle one, and that only a master admin could. Adi settled it the other way: agents may
+// decide, and one that would rather somebody else took the call assigns a card instead.
+// Lifting it for agents took the rationale out from under the master-admin gate too, so
+// one rule now covers every caller — be somebody who can be asked about it later.
+await t('anyone who can be named may settle a decision', () => {
   const agent = { agent: { id: 1, name: 'grok' } };
   const member = { person: { id: 2, display_name: 'Akshay', is_master: false } };
   const master = { person: { id: 3, display_name: 'Adi', is_master: true } };
   const key = { admin: true };
-  assert.strictEqual(decisionRefusal('decision', { state: 'proposed' }, agent), null);
-  assert.ok(decisionRefusal('decision', { state: 'decided' }, agent));
-  assert.ok(decisionRefusal('decision', { state: 'superseded' }, agent));
-  assert.ok(decisionRefusal('decision', { state: 'decided' }, member));
-  assert.strictEqual(decisionRefusal('decision', { state: 'decided' }, master), null);
-  assert.strictEqual(decisionRefusal('decision', { state: 'decided' }, key), null);
+  for (const who of [agent, member, master, key]) {
+    assert.strictEqual(decisionRefusal('decision', { state: 'proposed' }, who), null);
+    assert.strictEqual(decisionRefusal('decision', { state: 'decided' }, who), null);
+    assert.strictEqual(decisionRefusal('decision', { state: 'superseded' }, who), null);
+  }
   // Only decisions are policed; a status moving to done is nobody's permission question.
   assert.strictEqual(decisionRefusal('status', { lane: 'done' }, agent), null);
+});
+
+await t('a board passphrase cannot settle a decision, because it names nobody', () => {
+  const passphrase = { admin: false, person: null, agent: null };
+  assert.strictEqual(decisionRefusal('decision', { state: 'proposed' }, passphrase), null);
+  assert.ok(decisionRefusal('decision', { state: 'decided' }, passphrase));
+  assert.ok(decisionRefusal('decision', { state: 'superseded' }, passphrase));
+  assert.match(decisionRefusal('decision', { state: 'decided' }, passphrase), /names nobody/);
 });
 
 await t('log ids sort by when they were made', () => {
@@ -652,6 +668,180 @@ await t('a missing caller does not throw', () => {
   assert.doesNotThrow(() => approvalRefusal('done', gated, undefined));
   assert.strictEqual(typeof approvalRefusal('done', gated, undefined), 'string');
   assert.strictEqual(approvalRefusal('done', {}, undefined), null);
+});
+
+console.log('== plan sections have ids (migration 017)');
+
+// The seven live counsellor sections and the four on /platform, as they stood before 017.
+const LIVE = ['Two ways in, one way through', 'Phases', 'The math', 'Ground rules',
+  'Where each thing lives', 'People and agents', 'Snapshots'];
+
+await t('ids come from titles, and match what the migration computed', () => {
+  const ids = withSectionIds({ sections: LIVE.map((title) => ({ title })) })
+    .sections.map((s) => s.id);
+  assert.deepStrictEqual(ids, ['two-ways-in-one-way-through', 'phases', 'the-math',
+    'ground-rules', 'where-each-thing-lives', 'people-and-agents', 'snapshots']);
+  for (const id of ids) assert.ok(validSectionId(id), `${id} is a usable id`);
+});
+
+await t('assigning ids is idempotent', () => {
+  const once = withSectionIds({ sections: LIVE.map((title) => ({ title })) });
+  assert.deepStrictEqual(withSectionIds(once), once);
+});
+
+await t('an id never follows its title', () => {
+  // The whole point of an id: cards, history and an agent's last read point at it, so
+  // renaming the section must not move the target.
+  const renamed = withSectionIds({ sections: [{ id: 'the-math', title: 'The arithmetic' }] });
+  assert.strictEqual(renamed.sections[0].id, 'the-math');
+});
+
+await t('duplicate titles get readable suffixes, not random ones', () => {
+  const ids = withSectionIds({ sections: [{ title: 'Ground rules' }, { title: 'Ground rules' },
+    { title: 'Ground rules' }] }).sections.map((s) => s.id);
+  assert.deepStrictEqual(ids, ['ground-rules', 'ground-rules-2', 'ground-rules-3']);
+});
+
+await t('a title with nothing sluggable still gets an id', () => {
+  const ids = withSectionIds({ sections: [{}, { title: '!!!' }, { title: '   ' },
+    { title: '—' }] }).sections.map((s) => s.id);
+  assert.deepStrictEqual(ids, ['section', 'section-2', 'section-3', 'section-4']);
+});
+
+await t('a duplicate id in stored config is reassigned rather than left ambiguous', () => {
+  const ids = withSectionIds({ sections: [{ id: 'dup', title: 'One' }, { id: 'dup', title: 'Two' }] })
+    .sections.map((s) => s.id);
+  assert.strictEqual(ids[0], 'dup');
+  assert.notStrictEqual(ids[1], 'dup');
+});
+
+await t('ids are capped so they stay usable in a URL', () => {
+  const id = slugifySection('A very long section title that simply keeps going and going and going');
+  assert.ok(id.length <= 40, `${id} is ${id.length} chars`);
+  assert.ok(!id.endsWith('-'), 'no trailing dash after the cut');
+});
+
+await t('a section is found case-insensitively, like every other id', () => {
+  const plan = withSectionIds({ sections: LIVE.map((title) => ({ title })) });
+  assert.strictEqual(findSection(plan, 'GROUND-RULES').index, 3);
+  assert.strictEqual(findSection(plan, 'ground-rules').index, 3);
+  assert.strictEqual(findSection(plan, 'no-such-section'), null);
+  assert.strictEqual(findSection({}, 'ground-rules'), null);
+});
+
+console.log('== what a section edit may carry');
+
+await t('an unknown field is refused rather than silently stored', () => {
+  // A field outside the list would be written and never rendered, which is worse than a 422.
+  assert.strictEqual(sectionRefusal({ title: 'X' }), null);
+  assert.strictEqual(sectionRefusal({ nope: 1 }).field, 'nope');
+  assert.strictEqual(sectionRefusal({ diagramDocs: 'typo' }).field, 'diagramDocs');
+  // Every declared field is accepted when given a value of the right shape, so the list in
+  // the module and the validation below it cannot drift apart.
+  const sample = { bullets: ['a'], links: [{ label: 'x' }], columns: ['a'], rows: [{ a: 1 }] };
+  for (const f of SECTION_FIELDS) {
+    assert.strictEqual(sectionRefusal({ [f]: f in sample ? sample[f] : 'x' }), null,
+      `${f} should be accepted`);
+  }
+});
+
+await t('an id cannot be changed through an edit', () => {
+  assert.strictEqual(sectionRefusal({ id: 'something-else' }).field, 'id');
+});
+
+await t('a title cannot be emptied, but may be changed', () => {
+  assert.strictEqual(sectionRefusal({ title: '   ' }).field, 'title');
+  assert.strictEqual(sectionRefusal({ title: 'The arithmetic' }), null);
+  // Adding a section is not a partial patch, so a missing title is refused there.
+  assert.strictEqual(sectionRefusal({ note: 'x' }, { partial: false }).field, 'title');
+  assert.strictEqual(sectionRefusal({ note: 'x' }), null);
+});
+
+await t('lists must be lists, and rows must be objects', () => {
+  assert.strictEqual(sectionRefusal({ bullets: 'not a list' }).field, 'bullets');
+  assert.strictEqual(sectionRefusal({ rows: ['a string'] }).field, 'rows');
+  assert.strictEqual(sectionRefusal({ rows: [{ who: 'Gargi' }] }), null);
+  assert.strictEqual(sectionRefusal({ rows: Array(201).fill({ a: 1 }) }).field, 'rows');
+  assert.strictEqual(sectionRefusal({ note: 42 }).field, 'note');
+});
+
+await t('contact details are caught wherever they are nested', () => {
+  const find = findContactDetail;
+  // The likely hiding place is a table cell, not the title.
+  assert.ok(sectionRefusal({ rows: [{ who: 'Gargi', reach: 'gargi@example.com' }] }, { findContact: find }));
+  assert.ok(sectionRefusal({ bullets: ['call 9876543210'] }, { findContact: find }));
+  assert.ok(sectionRefusal({ title: 'Ring 9876543210' }, { findContact: find }));
+  assert.strictEqual(sectionRefusal({ rows: [{ target: '1,100 by May' }] }, { findContact: find }), null);
+});
+
+await t('a patch merges, a null clears, and arrays replace', () => {
+  const was = { id: 'the-math', title: 'The math', note: 'n', rows: [{ a: 1 }, { a: 2 }] };
+  assert.deepStrictEqual(applySectionPatch(was, { title: 'The arithmetic' }),
+    { id: 'the-math', title: 'The arithmetic', note: 'n', rows: [{ a: 1 }, { a: 2 }] });
+  assert.ok(!('note' in applySectionPatch(was, { note: null })));
+  // Three rows means three rows, not three appended to the two already there.
+  assert.deepStrictEqual(applySectionPatch(was, { rows: [{ b: 1 }] }).rows, [{ b: 1 }]);
+  assert.strictEqual(applySectionPatch(was, { id: 'hijacked' }).id, 'the-math');
+});
+
+await t('moving a section clamps rather than refusing', () => {
+  const s = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  assert.deepStrictEqual(moveSection(s, 2, 0).map((x) => x.id), ['c', 'a', 'b']);
+  assert.deepStrictEqual(moveSection(s, 0, 99).map((x) => x.id), ['b', 'c', 'a']);
+  assert.deepStrictEqual(moveSection(s, 0, -5).map((x) => x.id), ['a', 'b', 'c']);
+  assert.deepStrictEqual(moveSection(s, 9, 0).map((x) => x.id), ['a', 'b', 'c']);
+  assert.deepStrictEqual(s.map((x) => x.id), ['a', 'b', 'c'], 'the input is not mutated');
+});
+
+console.log('== the metric guard is about the data, not the caller');
+
+// The one refusal in this slice that applies to a master admin exactly as it does to an
+// agent. A key with numbers filed against it cannot be renamed or dropped, because those
+// numbers do not move with it — they stay in the table pointing at a definition that is
+// gone, which is the one change the config history cannot undo cleanly.
+const FUNNEL = { metrics: [{ key: 'contacted' }, { key: 'engaged' }, { key: 'attended' }] };
+
+await t('a board with no actuals recorded can change anything', () => {
+  assert.strictEqual(metricKeyRefusal(FUNNEL, []), null);
+  assert.strictEqual(metricKeyRefusal({ metrics: [] }, []), null);
+});
+
+await t('a key with no actuals may be renamed or dropped freely', () => {
+  // This is the live case: counsellor's three webinar metrics have no numbers yet, so they
+  // are still being designed and the guard must stay out of the way.
+  assert.strictEqual(metricKeyRefusal({ metrics: [{ key: 'contacted' }, { key: 'engaged' }] },
+    ['contacted', 'engaged']), null);
+});
+
+await t('a key with actuals cannot be dropped', () => {
+  const r = metricKeyRefusal({ metrics: [{ key: 'engaged' }] }, ['contacted', 'engaged']);
+  assert.ok(r, 'refused');
+  assert.match(r, /^contacted:/, 'names the key that would be orphaned');
+});
+
+await t('a key with actuals cannot be renamed, which is a drop plus an add', () => {
+  assert.ok(metricKeyRefusal({ metrics: [{ key: 'contacted_v2' }, { key: 'engaged' }] },
+    ['contacted', 'engaged']));
+});
+
+await t('a label may change; only the key is load-bearing', () => {
+  assert.strictEqual(metricKeyRefusal(
+    { metrics: [{ key: 'contacted', label: 'Reached out to' }] }, ['contacted'],
+  ), null);
+});
+
+await t('every orphaned key is named, not just the first', () => {
+  const r = metricKeyRefusal({ metrics: [] }, ['contacted', 'engaged']);
+  assert.match(r, /contacted/);
+  assert.match(r, /engaged/);
+  assert.match(r, /these metrics have/, 'reads correctly in the plural');
+  assert.match(metricKeyRefusal({ metrics: [] }, ['contacted']), /this metric has/);
+});
+
+await t('a plan with no metrics at all orphans everything recorded', () => {
+  // The revert case: going back to a version that predates a metric.
+  assert.ok(metricKeyRefusal({}, ['contacted']));
+  assert.ok(metricKeyRefusal(null, ['contacted']));
 });
 
 console.log(`\npassed ${pass}, failed ${fail}`);

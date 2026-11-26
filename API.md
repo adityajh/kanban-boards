@@ -457,10 +457,54 @@ path, because the token already names the board.
 | PATCH | `/tracker/:kind/:id` | some fields, plus `version?` | Merge. `null` clears a field |
 | DELETE | `/tracker/:kind/:id` | `version?` | Remove |
 | POST | `/tracker/log` | `{text, kind?, ref?}` | Append a log entry; its id is generated |
+| POST | `/tracker/batch` | `{ops: [...]}` | Up to 50 writes, applied together or not at all |
 
 **Send `version` and mean it.** A write whose version doesn't match gets `409` with the
 current row in the body, so you can re-read, redo and retry. Leave it out and you are
 overwriting whatever is there.
+
+### `POST /tracker/batch`
+
+```json
+{ "ops": [
+  { "op": "put",    "kind": "status",    "id": "s-outreach", "title": "…", "lane": "now" },
+  { "op": "patch",  "kind": "milestone", "id": "m-webinar",  "state": "done", "version": 3 },
+  { "op": "delete", "kind": "status",    "id": "s-stale",    "version": 7 }
+] }
+```
+
+`op` defaults to `put`. Returns `{ok, applied, results}` with each operation's index and
+whether it created, updated or deleted.
+
+This exists for correctness, not convenience. Updating the Plan after a team meeting took
+about forty separate calls, and a failure at call twenty-three left the Plan contradicting
+itself — a status row saying one thing and the milestone it belongs to saying another — with
+nobody aware it had half happened. "Mostly applied" is the one state a source of truth must
+not be able to reach.
+
+**How all-or-none is actually meant.** Every operation is validated first, against one read
+of every row the batch touches; a refusal writes nothing and names the operation by `index`,
+with `applied: 0`. The writes then go as one transaction, each carrying the row version from
+that read, and a row that moved underneath takes the whole batch down rather than landing
+half a change. That makes a batch **stricter** than the single-row routes, where `version` is
+optional: a batch that silently reflected somebody else's concurrent edit in some rows and
+not others would defeat the point.
+
+| Refused | |
+|---|---|
+| `422` | an invalid operation, more than 50, an empty list, or the same `kind/id` twice |
+| `409` | a version mismatch, or a row that moved between the read and the write |
+| `404` | `patch` or `delete` on a row that does not exist, or a board with no plan |
+| `429` | the batch would put the agent over its per-minute write limit |
+
+A batch counts as **one write per operation** against the agent's rate limit, not one per
+request — otherwise a 50-operation batch would turn a 120-a-minute limit into 6000 rows a
+minute. The charge happens before anything is written and is not refunded if the batch then
+fails.
+
+Each row still emits its own event. "A batch happened" would force every agent polling the
+feed to re-read everything the batch might have touched, and the feed is the whole catch-up
+mechanism.
 
 ### The six kinds
 
@@ -478,9 +522,18 @@ naming the field — it tells you what to fix rather than what went wrong.
 
 ### Three rules the API enforces
 
-**An agent may propose a decision and never settle one.** `state: decided` or `superseded`
-from an agent token is `403`; so is one from a board admin. Only a master admin, or
-`ADMIN_KEY`, settles a decision.
+**Settling a decision needs a caller who can be named.** `state: decided` or `superseded`
+is open to any signed-in person, any agent token, and `ADMIN_KEY`. A bare board passphrase
+is `403`: it is a shared secret naming nobody, so the row would say "board passphrase"
+decided something, and a decision there is no way to ask anybody about afterwards is not a
+decision.
+
+*Changed 26 Nov 2026.* This used to be master-admin only, and agents were refused outright.
+The thinking was that settling a decision is an act of authority. Adi settled it the other
+way: an agent that has done the work may record the conclusion, and an agent that would
+rather somebody else took the call **assigns a card and says so** — which is why there is no
+`/plan/proposals` endpoint. The board already has exactly one place where things wait on a
+person, and a second one would be the one nobody checks.
 
 **`by` on a log entry comes from the credential**, never the body — the same rule note
 authors run under. A person relaying somebody else says so in the text.
@@ -516,14 +569,82 @@ config.plan = {
   "metrics": [ { "key": "contacted", "label": "Contacted", "target": 1100 }, … ],
   "periods": [ { "id": "2026-11", "label": "Nov 2026",
                  "targets": { "contacted": 400, "enrolled": 0 } }, … ],
-  "sections": [ { "title": "Phases", "columns": [...], "rows": [...] },
-                { "title": "Ground rules", "bullets": [...] } ]
+  "sections": [ { "id": "phases", "title": "Phases", "columns": [...], "rows": [...] },
+                { "id": "ground-rules", "title": "Ground rules", "bullets": [...] } ]
 }
 ```
 
-Set through `PATCH /settings` like any other config, but **only by a master admin**: the
-plan is the board's constitution, and changing the metric set reinterprets every number
-already recorded. A board admin editing settings gets `403` for the `plan` key alone.
+`goal`, `metrics` and `periods` are set through `PATCH /settings` like any other config, and
+**only by a master admin**: they are the board's constitution, and changing the metric set
+reinterprets every number already recorded. A board admin editing settings gets `403` for
+the `plan` key alone.
+
+`sections` are different, and since 26 Nov have their own endpoints below. Section prose can
+be wrong and be fixed without rewriting history — a sentence describing the referral switch
+is not the referral numbers — so people and agents share it.
+
+### Sections (migration 017)
+
+Every section carries an `id`, assigned once from its title and **never following it**:
+renaming "The math" to "The arithmetic" keeps `the-math`, because the id is what cards,
+history and an agent's last read all point at. Before 017 a section was an anonymous array
+item rendered by index, which meant every edit replaced the whole plan and two edits to two
+different sections silently lost one of the two.
+
+`planVersion` comes back with `GET /tracker`, `GET /plan/sections` and every write. Send it
+as `expected_version` and a `409` says somebody changed the plan first.
+
+| | |
+|---|---|
+| `GET /plan/sections` | ids, titles and positions, plus `planVersion` |
+| `GET /plan/sections/:id` | one section (case-insensitive id) |
+| `PATCH /plan/sections/:id` | edit it — a person, an agent, or `ADMIN_KEY` |
+| `POST /plan/sections` | add one; the assigned `id` comes back |
+| `DELETE /plan/sections/:id` | a signed-in person only |
+| `GET /plan/history` | every version, newest first; `?version=N` for one in full |
+| `POST /plan/revert` | put the board back; a signed-in person only |
+
+```json
+PATCH /plan/sections/the-math
+{ "title": "The arithmetic", "note": null, "rows": [...],
+  "position": 0, "expected_version": 7 }
+```
+
+A field a section does not have is `422` rather than stored — it would be written and never
+rendered, which is worse than a refusal. Editable fields: `title`, `note`, `text`,
+`bullets`, `diagram`, `diagramDoc`, `links`, `columns`, `rows`. `null` clears a field, arrays
+replace rather than merge, `position` moves the section, and `id` cannot be changed.
+
+A **board passphrase is `403`** on every one of these: its edit would land in the history as
+"board passphrase", and the whole value of the history is that each row names someone.
+
+### History and revert
+
+Every config change keeps its predecessor, in full, including the ones you make through
+`PATCH /settings` — a history holding only what the agents did would tell you nothing about
+what you did, which is usually the half you want. Migration 017 seeded version 1 for every
+board that already existed, and a board created since gets version 1 as "board created", so
+there is always a floor to go back to.
+
+A revert is a **forward move**: the old config is written as a new version rather than the
+counter rewinding. Reverting a revert is just another revert, and nothing is ever lost —
+including the thing you reverted away from, which you may want back when the agent turns out
+to have been right.
+
+### One guard that is not about who is asking
+
+**A metric key with actuals recorded against it cannot be renamed or dropped — by anyone.**
+Not by an agent, not by a board admin, not by a master admin, and not by a revert to a
+version that predates the metric. `409`, naming the keys.
+
+Those numbers do not move when the key does. They stay in `tracker_items` pointing at a
+definition that no longer exists, which is the one change in this area that the history
+cannot undo cleanly. Everything else here — targets, labels, prose, periods — is fair game
+and revertible, so this refuses exactly one thing. Change a metric's `label` freely, or add
+a new key alongside the old one; the old one keeps its history.
+
+A key nobody has filed numbers against is unguarded, which is the useful case: on counsellor
+the three webinar metrics have no actuals yet and can still be redesigned at will.
 
 ## Board-management endpoints
 

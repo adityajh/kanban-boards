@@ -107,9 +107,26 @@ GET    /tracker/:kind             one kind
 PUT    /tracker/:kind/:id         create or replace — send "version"
 PATCH  /tracker/:kind/:id         merge fields — send "version"
 POST   /tracker/log               {text, kind?} — append; no version needed
+POST   /tracker/batch             {ops:[…]} — up to 50 writes, all or none
 ```
 
 Kinds: `status`, `decision`, `milestone`, `risk`, `actual`, `log`.
+
+**Use `/tracker/batch` whenever you are writing more than two or three rows at once** — after
+a meeting, or a sweep that updates a status and the milestone it belongs to. Either all of it
+lands or none of it does, so the Plan is never left half-updated and contradicting itself.
+
+```json
+POST /tracker/batch
+{ "ops": [
+  { "op": "put",   "kind": "status",    "id": "s-outreach", "title": "…", "lane": "now" },
+  { "op": "patch", "kind": "milestone", "id": "m-webinar",  "state": "done", "version": 3 }
+] }
+```
+
+A refusal names the failing operation by `index` and says `applied: 0`. Don't send the same
+`kind/id` twice in one batch — combine them into one operation. A batch costs one write per
+operation against your rate limit, not one per request.
 
 **Read `GET /tracker` before writing an `actual`.** Its `plan.metrics` tells you which
 numbers this board tracks; a key it does not declare is `422`.
@@ -121,6 +138,41 @@ PUT /tracker/actual/2026-11
 ```
 
 `null` means not known yet, which is not zero.
+
+### The Plan's prose is yours to fix too
+
+As of 26 Nov you can edit the Plan's sections — the titles, notes, bullets, tables and
+diagrams on the Plan tab. Previously the part that went stale fastest was the one part no
+agent could touch, and the only route to fixing a sentence was a card asking Adi.
+
+```
+GET    /plan/sections             ids, titles, positions, planVersion
+GET    /plan/sections/<id>        one section
+PATCH  /plan/sections/<id>        edit it — send "expected_version"
+POST   /plan/sections             add one; the assigned id comes back
+GET    /plan/history              every version, newest first
+```
+
+Every section has a stable `id` that **does not follow its title** — rename "The math" and it
+is still `the-math`. `planVersion` comes back with `GET /tracker`; send it as
+`expected_version` and a `409` means somebody edited the plan first, so re-read and reapply.
+
+```json
+PATCH /plan/sections/the-math
+{ "note": "updated after the 25 Nov meeting", "rows": [...], "expected_version": 7 }
+```
+
+Editable: `title`, `note`, `text`, `bullets`, `diagram`, `diagramDoc`, `links`, `columns`,
+`rows`. `null` clears a field. Arrays replace rather than append — send the rows you want the
+table to have, not the ones you are adding. Any other field is `422`.
+
+**What is still not yours**, and why: the `goal`, the `metrics` and the `periods`. Changing a
+metric key reinterprets every number already filed under it, so those stay with Adi. Nor can
+you delete a section or revert the plan — somebody who is not the editor has to be able to
+put it back, which is the reason you were given the editing in the first place.
+
+Every edit is recorded with your name and the previous version kept, so write as if somebody
+will read the history, because they will.
 
 ## Documents — reference
 
@@ -141,8 +193,14 @@ never conflict, so two agents writing at once both land.
 current row in the body. Re-read, reapply your change, retry. Leaving it out means
 overwriting whatever another agent just wrote.
 
-**You may propose a decision. You may never settle one.** `state: "proposed"` is yours;
-`decided` or `superseded` from an agent token is `403`. That is a person's act.
+**You may settle a decision** — `proposed`, `decided` and `superseded` are all yours, as of
+26 Nov 2026. If you would rather a person or another agent took the call, **assign a card to
+them and say what you would do and why.** That is the whole mechanism; there is no proposal
+queue, because the board already has exactly one place where things wait on a person and a
+second one would be the one nobody checks.
+
+Settle what you have actually established. Escalate what turns on something you cannot see —
+somebody's intent, a commercial judgement, a promise made to a person.
 
 **No contact details, anywhere.** An email address or a mobile number in any field is
 `422`. Contacts belong in the CRM. The check catches the obvious shapes only — the rule is

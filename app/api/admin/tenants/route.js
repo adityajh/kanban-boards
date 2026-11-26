@@ -2,6 +2,7 @@ import { sql } from '../../../../lib/db';
 import { json, options } from '../../../../lib/http';
 import { withAdmin, hashKey, validSlug, newPassphrase, normalizeConfig } from '../../../../lib/tenant';
 import { hashPassword, newPassword, validUsername } from '../../../../lib/auth';
+import { whoami } from '../../../../lib/plan';
 export const dynamic = 'force-dynamic';
 export async function OPTIONS() { return options(); }
 
@@ -21,7 +22,7 @@ export const GET = withAdmin(async () =>
 // Only a literal null opts out. An ABSENT key still mints one, exactly as before, and so does
 // an empty string: the default was deliberately left alone so that existing callers and the
 // admin screen do not change behaviour silently. Opting out is something a caller asks for.
-export const POST = withAdmin(async (req) => {
+export const POST = withAdmin(async (req, ctx, c) => {
   const b = await req.json().catch(() => ({}));
   const slug = String(b.slug || '').trim().toLowerCase();
   const name = String(b.name || '').trim();
@@ -56,6 +57,13 @@ export const POST = withAdmin(async (req) => {
     const [tenant] = await sql`insert into tenants (slug, name, key_hash, config)
       values (${slug}, ${name}, ${passphrase === null ? null : hashKey(passphrase)}, ${JSON.stringify(config)}::jsonb)
       returning id, slug, name, config, created_at`;
+
+    // Version 1 is the board as created. Migration 017 gave every board that already existed
+    // this floor to revert to, and a board created after it should have the same guarantee
+    // rather than a history that begins at its first edit — otherwise "put it back the way
+    // it was" has no answer on a board whose first change was a mistake.
+    await sql`insert into config_versions (tenant_id, version, config, changed_by, change)
+      values (${tenant.id}, 1, ${JSON.stringify(config)}::jsonb, ${whoami(c)}, 'board created')`;
 
     // If that admin already has an account, they join this board with the password they
     // already use; only a genuinely new person gets one issued.
